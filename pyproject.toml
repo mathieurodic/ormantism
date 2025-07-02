@@ -22,4 +22,4 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mathieurodic/crudantic/"
+Homepage = "https://github.com/mathieurodic/crudantic"
