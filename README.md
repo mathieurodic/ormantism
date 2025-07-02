@@ -1,4 +1,4 @@
-# CRUDantic
+# Ormantism
 
 A tiny, simple ORM for SQLite built on top of Pydantic.
 
@@ -17,7 +17,7 @@ When you need to perform simple CRUD operations with minimal code.
 ## Installation
 
 ```bash
-pip install crudantic
+pip install ormantism
 ```
 
 ## Quick Start
@@ -25,19 +25,19 @@ pip install crudantic
 ### 1. Connect to Database
 
 ```python
-import crudantic
+import ormantism
 
 # Connect to a file database
-crudantic.connect("my_app.db")
+ormantism.connect("my_app.db")
 
 # Or use in-memory database for testing
-crudantic.connect(":memory:")
+ormantism.connect(":memory:")
 ```
 
 ### 2. Define Models
 
 ```python
-from crudantic import Base
+from ormantism import Base
 from typing import Optional
 
 class User(Base):
@@ -150,7 +150,7 @@ book = Book.load(id=1, preload=["author", "category"])
 ### Transactions
 
 ```python
-from crudantic import transaction
+from ormantism import transaction
 
 try:
     with transaction() as t:
@@ -244,8 +244,8 @@ class Post(Base):
 
 ### Database Functions
 
-- `crudantic.connect(database_url)` - Connect to database
-- `crudantic.transaction()` - Get transaction context manager
+- `ormantism.connect(database_url)` - Connect to database
+- `ormantism.transaction()` - Get transaction context manager
 
 ## Limitations
 

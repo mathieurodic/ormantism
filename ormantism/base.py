@@ -11,7 +11,7 @@ from .database import transaction
 from .field import Field
 
 
-logger = logging.getLogger("crudantic")
+logger = logging.getLogger("ormantism")
 
 
 class BaseWithoutTimestamps(PydanticBaseModel):
