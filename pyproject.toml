@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ormantism"
-version = "0.1"
-description = "A lightweight SQLite ORM built on Pydantic for simple CRUD operations with minimal code"
+version = "0.2"
+description = "A lightweight ORM built on Pydantic for simple CRUD operations with minimal code"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
     {name = "Mathieu Rodic"},
 ]
-keywords = ["orm", "sqlite"]
+keywords = ["orm", "pydantic", "sqlite", "SQLite", "MySQL", "PostgreSQL"]
 license = {text = "MIT"}
 classifiers = [
     "License :: OSI Approved :: MIT License",

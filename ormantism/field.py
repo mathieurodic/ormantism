@@ -40,6 +40,7 @@ class Field:
     @cache
     def sql_declaration(self):
         translate_type = {
+            bool: "BOOLEAN",
             int: "INTEGER",
             float: "REAL",
             str: "TEXT",
@@ -48,9 +49,9 @@ class Field:
             dict: "JSON",
             type[PydanticBaseModel]: "JSON",
         }
-        if issubclass(self.base_type, enum.Enum):
+        if inspect.isclass(self.base_type) and issubclass(self.base_type, enum.Enum):
             result = f"{self.name} TEXT CHECK({self.name} in ('{"', '".join(e.value for e in self.base_type)}')) NOT NULL"
-        elif issubclass(self.base_type, PydanticBaseModel):
+        elif inspect.isclass(self.base_type) and issubclass(self.base_type, PydanticBaseModel):
             result = f"{self.name} JSON"
         elif self.full_type == type[PydanticBaseModel]:
             result = f"{self.name} JSON"
@@ -74,13 +75,12 @@ class Field:
             return json.dumps(value)
         if isinstance(value, enum.Enum):
             return value.value
+        if self.is_reference:
+            return value.id if value else None
         if inspect.isclass(value) and issubclass(value, PydanticBaseModel):
             return json.dumps(value.model_json_schema())
         if isinstance(value, PydanticBaseModel):
             return value.model_dump_json()
-        if self.is_reference:
-            name += "_id"
-            return value.id if value else None
         raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`")
 
     def parse(self, value: any):
@@ -96,15 +96,16 @@ class Field:
 
 
 if __name__== "__main__":
+    from typing import Optional
     from pydantic import Field as PydanticField
     from .base import Base
 
     class Thing(Base):
         pass
     class Agent(Base):
-        birthed_by: "Agent" | None = None
+        birthed_by: Optional["Agent"]
         name: str
-        description: str
+        description: str | None
         thing: Thing
         system_input: str
         bot_name: str
@@ -115,4 +116,7 @@ if __name__== "__main__":
         conversation: list[str] = PydanticField(default_factory=list)
 
     for name, info in Agent.model_fields.items():
+        print()
+        print(name)
         print(Field.from_pydantic_info(name, info))
+        print()

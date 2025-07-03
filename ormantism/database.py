@@ -1,19 +1,67 @@
-# database.py
-import sqlite3
+import urllib.parse
+from functools import cache
 from contextlib import contextmanager
 
 
+class DatabaseConnectionError(Exception):
+    pass
+
+
 class Database:
-    def __init__(self, db_path):
-        self.db_path = db_path
-        self.connection = sqlite3.connect(db_path)
+
+    AUTHORIZED_SCHEMAS = ("postgresql", "mysql", "sqlite")
+
+    def __init__(self, database_url):
+        self.database_url = database_url
+        self.parsed_url = urllib.parse.urlparse(self.database_url)
+        if self.parsed_url.scheme not in self.AUTHORIZED_SCHEMAS:
+            raise DatabaseConnectionError(f"Unsupported database scheme: {self.parsed_url.scheme}; supported values are: {", ".join(self.AUTHORIZED_SCHEMAS)}.")
+
+    @property
+    @cache
+    def connection(self):
+
+        if self.parsed_url.scheme == "mysql":
+            import pymysql
+
+            # Establishing the connection
+            connection = pymysql.connect(
+                host=self.parsed_url.hostname,
+                user=self.parsed_url.username,
+                password=self.parsed_url.password,
+                database=self.parsed_url.path[1:],
+                port=self.parsed_url.port
+            )
+            return connection
+
+        if self.parsed_url.scheme == "sqlite":
+            import sqlite3
+
+            # For SQLite, the database is usually a file path
+            # Establishing the connection
+            connection = sqlite3.connect(self.parsed_url.path[1:] or self.parsed_url.hostname)
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
+
+        if self.parsed_url.scheme == "postgresql":
+            import psycopg2
+
+            # Establishing the connection
+            connection = psycopg2.connect(
+                host=self.parsed_url.hostname,
+                user=self.parsed_url.username,
+                password=self.parsed_url.password,
+                database=self.parsed_url.path[1:],
+                port=self.parsed_url.port
+            )
+            return connection
     
     @contextmanager
     def transaction(self):
         """Context manager for database transactions with automatic rollback on exception."""
         conn = self.connection
         try:
-            # Begin transaction (sqlite3 starts transaction automatically on first SQL statement)
+            # Begin transaction
             yield conn
             # If we reach here, no exception occurred, so commit
             conn.commit()
@@ -31,7 +79,7 @@ _database = None
 
 
 def connect(database_url: str):
-    """Connect to a database. Use ':memory:' for in-memory database."""
+    """Connect to a database. Use ":memory:" for in-memory database."""
     global _database
     _database = Database(database_url)
     return _database
@@ -51,8 +99,9 @@ def transaction():
 
 
 if __name__ == "__main__":
+    import sqlite3
     # Initialize database
-    database = connect(":memory:")  # Use in-memory database for example
+    database = connect("sqlite:///:memory:")  # Use in-memory database for example
     
     # Create a test table
     database.connection.execute("""

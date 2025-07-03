@@ -1,8 +1,10 @@
 # Ormantism
 
-A tiny, simple ORM for SQLite built on top of Pydantic.
+A tiny, simple ORM built on top of Pydantic.
 
 When you need to perform simple CRUD operations with minimal code.
+
+Offers support for PostgreSQL, MySQL, SQLite (database URL syntax is the same as in SQLAlchemy).
 
 ## Features
 
@@ -12,7 +14,6 @@ When you need to perform simple CRUD operations with minimal code.
 - **Transaction Support**: Built-in transaction management with automatic rollback
 - **Preloading**: Efficiently load related data with JOIN queries
 - **Optional Timestamps**: Add created_at, updated_at, deleted_at fields automatically
-- **SQLite Only**: Focused on SQLite for simplicity and reliability
 
 ## Installation
 
@@ -28,10 +29,16 @@ pip install ormantism
 import ormantism
 
 # Connect to a file database
-ormantism.connect("my_app.db")
+ormantism.connect("sqlite:///my_app.db")
 
 # Or use in-memory database for testing
-ormantism.connect(":memory:")
+ormantism.connect("sqlite://:memory:")
+
+# MySQL
+ormantism.connect("mysql://login:password@host:port/database")
+
+# PostgresSQL
+ormantism.connect("postgresql://login:password@host:port/database")
 ```
 
 ### 2. Define Models
@@ -249,7 +256,6 @@ class Post(Base):
 
 ## Limitations
 
-- **SQLite Only**: This ORM is designed specifically for SQLite databases
 - **Simple Queries**: Complex queries may require raw SQL
 - **No Migrations**: Schema changes require manual handling
 - **Basic Relationships**: Only supports simple foreign key relationships

@@ -7,6 +7,7 @@ from functools import cache
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic._internal._model_construction import ModelMetaclass
 
+from .utils.make_hashable import make_hashable
 from .database import transaction
 from .field import Field
 
@@ -35,9 +36,36 @@ class TimestampMeta(ModelMetaclass):
                                bases + (BaseWithTimestamps if with_timestamps else BaseWithoutTimestamps,),
                                namespace, **kwargs)
 
+from pydantic import ConfigDict
 
 class Base(metaclass=TimestampMeta):
     id: int = None
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed = True,
+        json_encoders = {
+            type[PydanticBaseModel]: lambda v: v.__name__
+        },
+    )
+
+    def __hash__(self):
+        return hash(make_hashable(self))
+
+    # INSERT
+    def model_post_init(self, __context: any) -> None:
+        if self.id is not None and self.id >= 0:
+            return
+        data = self._get_columns_data() | {"id": None}
+        sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
+        self._execute(sql, list(data.values()))
+        more_columns = ", created_at" if isinstance(self, BaseWithTimestamps) else ""
+        cursor = self._execute(f"SELECT id{more_columns} FROM {self._get_table_name()} WHERE id = last_insert_rowid()")
+        row = cursor.fetchone()
+        self.__dict__["id"] = row[0]
+        if isinstance(self, BaseWithTimestamps):
+            self.__dict__["created_at"] = datetime.datetime.fromisoformat(row[1])
+        if hasattr(self, "__post_init__"):
+            self.__post_init__()
 
     @classmethod
     @cache
@@ -84,6 +112,7 @@ class Base(metaclass=TimestampMeta):
             try:
                 return t.execute(sql, parameters)
             except sqlite3.OperationalError as e:
+                t.rollback()
                 if not str(e).startswith("no such table: "):
                     raise
                 cls._create_table()
@@ -92,10 +121,11 @@ class Base(metaclass=TimestampMeta):
     # CREATE TABLE
 
     @classmethod
-    def _create_table(cls):
+    def _create_table(cls, created: set[type["Base"]]=set()):
+        created.add(cls)
         for field in cls._get_fields().values():
-            if field.is_reference:
-                field.base_type._create_table()
+            if field.is_reference and field.base_type not in created:
+                field.base_type._create_table(created)
         translate_type = {
             int: "INTEGER NOT NULL",
             int|None: "INTEGER",
@@ -105,7 +135,7 @@ class Base(metaclass=TimestampMeta):
             datetime.datetime|None: "TIMESTAMP",
             list[str]: "JSON NOT NULL",
         }
-        sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} ({", ".join([
+        sql = f"CREATE TABLE {cls._get_table_name()} (\n  {",\n  ".join([
             "id INTEGER PRIMARY KEY AUTOINCREMENT",
             "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
             "updated_at TIMESTAMP",
@@ -121,20 +151,6 @@ class Base(metaclass=TimestampMeta):
         ])})"
         cls._execute(sql)
 
-    # INSERT
-    def model_post_init(self, __context: any) -> None:
-        if self.id is not None and self.id >= 0:
-            return
-        data = self._get_columns_data() | {"id": None}
-        sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
-        self._execute(sql, list(data.values()))
-        more_columns = ", created_at" if isinstance(self, BaseWithTimestamps) else ""
-        cursor = self._execute(f"SELECT id{more_columns} FROM {self._get_table_name()} WHERE id = last_insert_rowid()")
-        row = cursor.fetchone()
-        self.__dict__["id"] = row[0]
-        if isinstance(self, BaseWithTimestamps):
-            self.__dict__["created_at"] = datetime.datetime.fromisoformat(row[1])
-
     # UPDATE
     def __setattr__(self, name, value):
         self.__dict__[name] = value
@@ -145,6 +161,7 @@ class Base(metaclass=TimestampMeta):
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
         sql = f"UPDATE {self._get_table_name()} SET "
+        parameters = []
         for i, (name, value) in enumerate(kwargs.items()):
             field = self._get_field(name)
             if value is not None and not isinstance(value, field.base_type):
@@ -156,11 +173,11 @@ class Base(metaclass=TimestampMeta):
                 sql += "_id"
             if value is None:
                 sql += " = NULL"
-            elif field.is_reference:
+            else:
                 sql += " = ?"
-                parameters = [value.id] if field.is_reference else [value]
-            sql += ", updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-            self._execute(sql, parameters + [self.id])
+                parameters += [value.id if field.is_reference else field.serialize(value)]
+        sql += ", updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        self._execute(sql, parameters + [self.id])
 
     # DELETE
     def delete(self):
@@ -229,7 +246,10 @@ class Base(metaclass=TimestampMeta):
         for name, field in self._get_fields().items():
             if name in self._DEFAULT_FIELDS:
                 continue
-            data[name] = field.serialize(getattr(self, name))
+            value = field.serialize(getattr(self, name))
+            if field.is_reference:
+                name += "_id"
+            data[name] = value
         return data
 
     @classmethod
