@@ -72,20 +72,24 @@ class Field:
         if isinstance(value, (int, float, str, type(None))):
             return value
         if isinstance(value, (list, dict)):
-            return json.dumps(value)
+            return json.dumps(value, ensure_ascii=False, indent=0)
         if isinstance(value, enum.Enum):
             return value.value
         if self.is_reference:
             return value.id if value else None
         if inspect.isclass(value) and issubclass(value, PydanticBaseModel):
-            return json.dumps(value.model_json_schema())
+            return json.dumps(value.model_json_schema(), ensure_ascii=False, indent=0)
         if isinstance(value, PydanticBaseModel):
             return value.model_dump_json()
         raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`")
 
     def parse(self, value: any):
-        if value is None or self.base_type in (int, float, str):
-            return value
+        if value is None:
+            return None
+        if self.base_type in (int, float, str, bool):
+            return self.base_type(value)
+        if self.base_type == datetime.datetime and isinstance(value, str):
+            return datetime.datetime.fromisoformat(value)
         if self.base_type in (dict, list):
             return json.loads(value)
         if self.full_type == type[PydanticBaseModel]:

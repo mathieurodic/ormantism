@@ -188,7 +188,7 @@ class Base(metaclass=TimestampMeta):
 
     # SELECT
     @classmethod
-    def load(cls, last_created:bool=False, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Base":
+    def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Base":
         if not preload:
             preload = []
         if isinstance(preload, str):
@@ -220,9 +220,15 @@ class Base(metaclass=TimestampMeta):
                 else:
                     sql += " = ?"
                     values.append(value)
-        if last_created:
-            sql += f"\nORDER BY {cls._get_table_name()}.created_at DESC\nLIMIT 1"
 
+        # ORDER & LIMIT
+        sql += f"\nORDER BY {cls._get_table_name()}.{"created_at" if issubclass(cls, BaseWithTimestamps) else "id"}"
+        if reversed:
+            sql += " DESC"
+        if not as_collection:
+            sql += "\nLIMIT 1"
+
+        # execute & return result
         if as_collection:
             rows = cls._execute(sql, values).fetchall()
             return [
