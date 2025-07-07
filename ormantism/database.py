@@ -89,7 +89,7 @@ def get_database():
     """Get the current database instance."""
     global _database
     if _database is None:
-        raise RuntimeError("No database connection. Call nanorm.connect(database_url) first.")
+        raise RuntimeError("No database connection. Call `ormantism.connect(database_url)` first.")
     return _database
 
 
