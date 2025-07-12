@@ -35,7 +35,7 @@ class BaseMeta(ModelMetaclass):
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool=True,
                 with_timestamps: bool=False,
-                versioning_along: str=None,
+                versioning_along: tuple[str]=None,
                 **kwargs):
         default_bases: tuple[type[PydanticBaseModel]] = tuple()
         if with_primary_key:
@@ -48,6 +48,10 @@ class BaseMeta(ModelMetaclass):
         result = super().__new__(mcs, name, bases, namespace, **kwargs)
         result._DEFAULT_FIELDS = sum((tuple(base.model_fields.keys())
                                      for base in default_bases), start=())
+        if versioning_along is None:
+            for base in bases:
+                if getattr(base, "_VERSIONING_ALONG", None):
+                    versioning_along = base._VERSIONING_ALONG
         result._VERSIONING_ALONG = versioning_along
         return result
 
@@ -72,9 +76,20 @@ class Base(metaclass=BaseMeta):
         data = self._get_columns_data() | {"id": None}
         # special column for versioning
         if isinstance(self, _WithVersion):
-            sql = f"UPDATE {self._get_table_name()} SET is_active = false WHERE is_active AND {self._VERSIONING_ALONG} = ? RETURNING version"
-            row = self._execute(sql, (self.name,)).fetchone()
+            sql = f"UPDATE {self._get_table_name()} SET is_active = false WHERE is_active "
+            values = []
+            for name, value in data.items():
+                if name not in self._VERSIONING_ALONG:
+                    continue
+                if value is None:
+                    sql += f" AND {name} IS NULL"
+                else:
+                    sql += f" AND {name} = ?"
+                    values.append(value)
+            sql += " RETURNING version"
+            row = self._execute(sql, values).fetchone()
             data["version"] = self.__dict__["version"] = (row[0] + 1) if row else 0
+            data["is_active"] = True
         # perform insertion
         sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
         self._execute(sql, list(data.values()))
@@ -85,6 +100,7 @@ class Base(metaclass=BaseMeta):
         self.__dict__["id"] = row[0]
         if isinstance(self, _WithTimestamps):
             self.__dict__["created_at"] = datetime.datetime.fromisoformat(row[1])
+        # trigger
         if hasattr(self, "__post_init__"):
             self.__post_init__()
 
@@ -100,19 +116,6 @@ class Base(metaclass=BaseMeta):
     @cache
     def _get_field(cls, name: str):
         return cls._get_fields()[name]
-
-    @classmethod
-    @cache
-    def _get_columns(cls):
-        columns = {}
-        for name, field in cls._get_fields().items():
-            column = Field(**dataclasses.asdict(field))
-            if field.is_reference:
-                name += "_id"
-                column.name = name
-                column.base_type = int
-            columns[name] = column
-        return columns
 
     @classmethod
     @cache
@@ -152,10 +155,12 @@ class Base(metaclass=BaseMeta):
 
     @classmethod
     def _create_table(cls, created: set[type["Base"]]=set()):
+        # create tables for references first
         created.add(cls)
         for field in cls._get_fields().values():
             if field.is_reference and field.base_type not in created:
                 field.base_type._create_table(created)
+        # translation from Python to SQL type
         translate_type = {
             int: "INTEGER NOT NULL",
             int|None: "INTEGER",
@@ -165,22 +170,27 @@ class Base(metaclass=BaseMeta):
             datetime.datetime|None: "TIMESTAMP",
             list[str]: "JSON NOT NULL",
         }
-        sql = f"CREATE TABLE {cls._get_table_name()} (\n  {",\n  ".join([
-            "id INTEGER PRIMARY KEY AUTOINCREMENT",
-            "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
-            "updated_at TIMESTAMP",
-            "deleted_at TIMESTAMP",
-            "version INT",
-            "is_active BOOL NOT NULL DEFAULT TRUE",
-        ] + [
+        # initialize statements for table creation
+        statements = []
+        # id & created_at are special
+        if issubclass(cls, _WithPrimaryKey):
+            statements += ["id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT"]
+        if issubclass(cls, _WithTimestamps):
+            statements += ["created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"]
+        # other columns are easy
+        statements += [
             field.sql_declaration
-            for name, field in cls._get_columns().items()
-            if name not in cls._DEFAULT_FIELDS
-        ] + [
+            for field in cls._get_fields().values()
+            if field.name not in ("created_at", "id")
+        ]
+        # foreign keys
+        statements += [
             f"FOREIGN KEY ({name}_id) REFERENCES {field.base_type._get_table_name()}(id)"
             for name, field in cls._get_fields().items()
             if field.is_reference
-        ])})"
+        ]
+        # build & execute SQL
+        sql = f"CREATE TABLE {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
         cls._execute(sql)
 
     # UPDATE
@@ -199,6 +209,9 @@ class Base(metaclass=BaseMeta):
                                           if name not in self._DEFAULT_FIELDS
                                           and name in self._get_fields()})
             self.__dict__.update(new_instance.__dict__)
+            # trigger
+            if hasattr(self, "__post_update__"):
+                self.__post_update__()
             return
 
         # other cases: actually update
@@ -226,6 +239,9 @@ class Base(metaclass=BaseMeta):
         cursor = self._execute(sql, parameters + [self.id])
         if isinstance(self, _WithTimestamps):
             self.__dict__["updated_at"] = cursor.fetchone()[0]
+        # trigger
+        if hasattr(self, "__post_update__"):
+            self.__post_update__()
 
     # DELETE
     def delete(self):
@@ -260,24 +276,26 @@ class Base(metaclass=BaseMeta):
         if issubclass(cls, _WithTimestamps) and not with_deleted:
             criteria = dict(deleted_at=None, **criteria)
         if criteria:
-            for key, value in criteria.items():
-                sql += f"\nAND {cls._get_table_name()}.{key}"
+            for name, value in criteria.items():
+                field = cls._get_field(name)
+                sql += f"\nAND {cls._get_table_name()}.{field.column_name}"
                 if value is None:
                     sql += " IS NULL"
                 else:
                     sql += " = ?"
-                    values.append(value)
+                    values.append(field.serialize(value))
 
         # ORDER & LIMIT
-        sql += f"\nORDER BY {cls._get_table_name()}"
+        order_columns = []
         if issubclass(cls, _WithTimestamps):
-            sql += "created_at"
+            order_columns += ["created_at"]
         elif issubclass(cls, _WithVersion):
-            sql += "version"
+            order_columns += list(cls._VERSIONING_ALONG)
+            order_columns += ["version"]
         else:
-            sql += "id"
-        if reversed:
-            sql += " DESC"
+            sql += ["id"]
+        sql += f"\nORDER BY {", ".join(f"{cls._get_table_name()}.{column}" + (" DESC" if reversed else "")
+                                       for column in order_columns)}"
         if not as_collection:
             sql += "\nLIMIT 1"
 
@@ -302,13 +320,11 @@ class Base(metaclass=BaseMeta):
 
     def _get_columns_data(self) -> dict[str, any]:
         data = {}
-        for name, field in self._get_fields().items():
-            if name in self._DEFAULT_FIELDS:
+        for field in self._get_fields().values():
+            if field.name in self._DEFAULT_FIELDS:
                 continue
-            value = field.serialize(getattr(self, name))
-            if field.is_reference:
-                name += "_id"
-            data[name] = value
+            value = field.serialize(getattr(self, field.name))
+            data[field.column_name] = value
         return data
 
     @classmethod

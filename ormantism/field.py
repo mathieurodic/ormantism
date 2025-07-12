@@ -21,19 +21,35 @@ class Field:
     full_type: type
     default: any
     is_required: bool
+    column_is_required: bool
     is_reference: bool
+
+    @property
+    @cache
+    def column_name(self):
+        if self.is_reference:
+            return f"{self.name}_id"
+        return self.name
+
+    @property
+    @cache
+    def column_base_type(self):
+        if self.is_reference:
+            return int
+        return self.base_type
 
     @classmethod
     def from_pydantic_info(cls, name: str, info: PydanticFieldInfo):
         from .utils.get_base_type import get_base_type
         from .base import Base
-        base_type, is_required = get_base_type(info.annotation)
+        base_type, column_is_required = get_base_type(info.annotation)
         return cls(model=cls,
                    name=name,
                    base_type=base_type,
                    full_type=info.annotation,
                    default=None if info.default == PydanticUndefined else info.default,
-                   is_required=is_required and info.is_required(),
+                   column_is_required=column_is_required,
+                   is_required=column_is_required and info.is_required(),
                    is_reference=issubclass(base_type, Base))
 
     @property
@@ -49,19 +65,19 @@ class Field:
             dict: "JSON",
             type[PydanticBaseModel]: "JSON",
         }
-        if inspect.isclass(self.base_type) and issubclass(self.base_type, enum.Enum):
-            result = f"{self.name} TEXT CHECK({self.name} in ('{"', '".join(e.value for e in self.base_type)}')) NOT NULL"
-        elif inspect.isclass(self.base_type) and issubclass(self.base_type, PydanticBaseModel):
-            result = f"{self.name} JSON"
+        if inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, enum.Enum):
+            sql = f"{self.column_name} TEXT CHECK({self.column_name} in ('{"', '".join(e.value for e in self.column_base_type)}'))"
+        elif inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, PydanticBaseModel):
+            sql = f"{self.column_name} JSON"
         elif self.full_type == type[PydanticBaseModel]:
-            result = f"{self.name} JSON"
-        elif self.base_type in translate_type:
-            result = f"{self.name} {translate_type[self.base_type]}"
+            sql = f"{self.column_name} JSON"
+        elif self.column_base_type in translate_type:
+            sql = f"{self.column_name} {translate_type[self.column_base_type]}"
         else:
-            raise TypeError(f"Type `{self.base_type}` of `{self.model.__name__}.{self.name}` has no known conversion to SQL type")
-        if self.is_required:
-            result += " NOT NULL"
-        return result
+            raise TypeError(f"Type `{self.column_base_type}` of `{self.model.__name__}.{self.column_name}` has no known conversion to SQL type")
+        if self.column_is_required:
+            sql += " NOT NULL"
+        return sql
 
     def __hash__(self):
         return hash(tuple(asdict(self).items()))
@@ -69,6 +85,8 @@ class Field:
     # conversion
 
     def serialize(self, value: any):
+        if isinstance(value, bool):
+            return int(value)
         if isinstance(value, (int, float, str, type(None))):
             return value
         if isinstance(value, (list, dict)):

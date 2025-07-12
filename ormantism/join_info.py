@@ -30,8 +30,8 @@ class JoinInfo(PydanticBaseModel):
     def get_columns(self, parent_alias: str=None):
         if not parent_alias:
             parent_alias = self.model._get_table_name()
-        for name in self.model._get_columns():
-            yield f"{parent_alias}__{name}", f"{parent_alias}.{name}"
+        for field in self.model._get_fields().values():
+            yield f"{parent_alias}__{field.column_name}", f"{parent_alias}.{field.column_name}"
         for name, child in self.children.items():
             alias = f"{parent_alias}__{name}"
             yield from child.get_columns(alias)
