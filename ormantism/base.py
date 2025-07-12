@@ -4,7 +4,7 @@ import dataclasses
 import logging
 from functools import cache
 
-from pydantic import BaseModel as PydanticBaseModel
+from pydantic import BaseModel as PydanticBaseModel, ConfigDict as PydanticConfigDict
 from pydantic._internal._model_construction import ModelMetaclass
 
 from .utils.make_hashable import make_hashable
@@ -15,33 +15,47 @@ from .field import Field
 logger = logging.getLogger("ormantism")
 
 
-class BaseWithoutTimestamps(PydanticBaseModel):
+class _WithPrimaryKey(PydanticBaseModel):
     id: int = None
 
-BaseWithoutTimestamps._DEFAULT_FIELDS = ("id",)
 
-
-class BaseWithTimestamps(BaseWithoutTimestamps):
+class _WithTimestamps(PydanticBaseModel):
     created_at: datetime.datetime = None
     updated_at: datetime.datetime = None
     deleted_at: datetime.datetime = None
 
-BaseWithTimestamps._DEFAULT_FIELDS = ("id", "created_at", "updated_at", "deleted_at")
+
+class _WithVersion(PydanticBaseModel):
+    version: int = 0
+    is_active: bool = True
 
 
-class TimestampMeta(ModelMetaclass):
-    
-    def __new__(mcs, name, bases, namespace, with_timestamps=False, **kwargs):
-        return super().__new__(mcs, name,
-                               bases + (BaseWithTimestamps if with_timestamps else BaseWithoutTimestamps,),
-                               namespace, **kwargs)
+class BaseMeta(ModelMetaclass):
 
-from pydantic import ConfigDict
+    def __new__(mcs, name, bases, namespace,
+                with_primary_key: bool=True,
+                with_timestamps: bool=False,
+                versioning_along: str=None,
+                **kwargs):
+        default_bases: tuple[type[PydanticBaseModel]] = tuple()
+        if with_primary_key:
+            default_bases += (_WithPrimaryKey,)
+        if with_timestamps:
+            default_bases += (_WithTimestamps,)
+        if versioning_along:
+            default_bases += (_WithVersion,)
+        bases += default_bases
+        result = super().__new__(mcs, name, bases, namespace, **kwargs)
+        result._DEFAULT_FIELDS = sum((tuple(base.model_fields.keys())
+                                     for base in default_bases), start=())
+        result._VERSIONING_ALONG = versioning_along
+        return result
 
-class Base(metaclass=TimestampMeta):
+
+class Base(metaclass=BaseMeta):
     id: int = None
 
-    model_config = ConfigDict(
+    model_config = PydanticConfigDict(
         arbitrary_types_allowed = True,
         json_encoders = {
             type[PydanticBaseModel]: lambda v: v.__name__
@@ -56,13 +70,20 @@ class Base(metaclass=TimestampMeta):
         if self.id is not None and self.id >= 0:
             return
         data = self._get_columns_data() | {"id": None}
+        # special column for versioning
+        if isinstance(self, _WithVersion):
+            sql = f"UPDATE {self._get_table_name()} SET is_active = false WHERE is_active AND {self._VERSIONING_ALONG} = ? RETURNING version"
+            row = self._execute(sql, (self.name,)).fetchone()
+            data["version"] = self.__dict__["version"] = (row[0] + 1) if row else 0
+        # perform insertion
         sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
         self._execute(sql, list(data.values()))
-        more_columns = ", created_at" if isinstance(self, BaseWithTimestamps) else ""
+        # retrieve automatic columns from inserted row
+        more_columns = ", created_at" if isinstance(self, _WithTimestamps) else ""
         cursor = self._execute(f"SELECT id{more_columns} FROM {self._get_table_name()} WHERE id = last_insert_rowid()")
         row = cursor.fetchone()
         self.__dict__["id"] = row[0]
-        if isinstance(self, BaseWithTimestamps):
+        if isinstance(self, _WithTimestamps):
             self.__dict__["created_at"] = datetime.datetime.fromisoformat(row[1])
         if hasattr(self, "__post_init__"):
             self.__post_init__()
@@ -103,20 +124,29 @@ class Base(metaclass=TimestampMeta):
         }
 
     # execute SQL
+    @classmethod
+    def _execute_from(cls, t, sql: str, parameters: list=[]):
+        logger.debug(sql)
+        logger.debug(parameters)
+        try:
+            return t.execute(sql, parameters)
+        except sqlite3.OperationalError as e:
+            t.rollback()
+            if not str(e).startswith("no such table: "):
+                raise
+            cls._create_table()
+            return t.execute(sql, parameters)
 
     @classmethod
     def _execute(cls, sql: str, parameters: list=[]):
-        logger.debug(sql)
-        logger.debug(parameters)
-        with transaction() as t:
-            try:
-                return t.execute(sql, parameters)
-            except sqlite3.OperationalError as e:
-                t.rollback()
-                if not str(e).startswith("no such table: "):
-                    raise
-                cls._create_table()
-                return t.execute(sql, parameters)
+        try:
+            with transaction() as t:
+                return cls._execute_from(t, sql, parameters)
+        except sqlite3.OperationalError as e:
+            t.rollback()
+            if not str(e).startswith("cannot commit transaction - SQL statements in progress"):
+                raise
+            return cls._execute_from(t, sql, parameters)
 
     # CREATE TABLE
 
@@ -140,6 +170,8 @@ class Base(metaclass=TimestampMeta):
             "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
             "updated_at TIMESTAMP",
             "deleted_at TIMESTAMP",
+            "version INT",
+            "is_active BOOL NOT NULL DEFAULT TRUE",
         ] + [
             field.sql_declaration
             for name, field in cls._get_columns().items()
@@ -159,6 +191,17 @@ class Base(metaclass=TimestampMeta):
         self.update(**{name: value})
 
     def update(self, **kwargs):
+
+        # versioning: insert a new version
+        if isinstance(self, _WithVersion):
+            new_instance = self.__class__(**{name: value
+                                          for name, value in self.__dict__.items()
+                                          if name not in self._DEFAULT_FIELDS
+                                          and name in self._get_fields()})
+            self.__dict__.update(new_instance.__dict__)
+            return
+
+        # other cases: actually update
         self.__dict__.update(kwargs)
         sql = f"UPDATE {self._get_table_name()} SET "
         parameters = []
@@ -176,12 +219,17 @@ class Base(metaclass=TimestampMeta):
             else:
                 sql += " = ?"
                 parameters += [value.id if field.is_reference else field.serialize(value)]
-        sql += ", updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        self._execute(sql, parameters + [self.id])
+        if isinstance(self, _WithTimestamps):
+            sql += ", updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING updated_at"
+        else:
+            sql += " WHERE id = ?"
+        cursor = self._execute(sql, parameters + [self.id])
+        if isinstance(self, _WithTimestamps):
+            self.__dict__["updated_at"] = cursor.fetchone()[0]
 
     # DELETE
     def delete(self):
-        if isinstance(self, BaseWithTimestamps):
+        if isinstance(self, _WithTimestamps):
             self._execute(f"UPDATE {self._get_table_name()} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", [self.id])
         else:
             self._execute(f"DELETE FROM {self._get_table_name()} WHERE id = ?", [self.id])
@@ -198,7 +246,6 @@ class Base(metaclass=TimestampMeta):
         join_info = JoinInfo(model=cls)
         for path_str in preload:
             path = path_str.split(".")
-            print(f"{path=}")
             join_info.add_children(path)
             
         # SELECT
@@ -210,7 +257,7 @@ class Base(metaclass=TimestampMeta):
         # WHERE
         values = []
         sql += "\nWHERE 1 = 1"
-        if issubclass(cls, BaseWithTimestamps) and not with_deleted:
+        if issubclass(cls, _WithTimestamps) and not with_deleted:
             criteria = dict(deleted_at=None, **criteria)
         if criteria:
             for key, value in criteria.items():
@@ -222,7 +269,13 @@ class Base(metaclass=TimestampMeta):
                     values.append(value)
 
         # ORDER & LIMIT
-        sql += f"\nORDER BY {cls._get_table_name()}.{"created_at" if issubclass(cls, BaseWithTimestamps) else "id"}"
+        sql += f"\nORDER BY {cls._get_table_name()}"
+        if issubclass(cls, _WithTimestamps):
+            sql += "created_at"
+        elif issubclass(cls, _WithVersion):
+            sql += "version"
+        else:
+            sql += "id"
         if reversed:
             sql += " DESC"
         if not as_collection:
@@ -305,6 +358,19 @@ class Base(metaclass=TimestampMeta):
 
 
 if __name__ == "__main__":
+    from .database import connect
+    connect("sqlite:///:memory:")
+
+    class Document(Base, versioning_along="name"):
+        name: str
+        content: str
+    d1 = Document(name="foo", content="azertyuiop")
+    d2 = Document(name="foo", content="azertyuiopqsdfghjlm")
+    print(d1)
+    print(d2)
+    d2.content += " :)"
+    print(d2)
+    exit()
     
     # company model
     class Company(Base):
