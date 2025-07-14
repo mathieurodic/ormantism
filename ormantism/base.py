@@ -196,7 +196,7 @@ class Base(metaclass=BaseMeta):
     # UPDATE
     def __setattr__(self, name, value):
         self.__dict__[name] = value
-        if name[0] == "_":
+        if name[0] == "_" or name not in self._get_fields():
             return
         self.update(**{name: value})
 
