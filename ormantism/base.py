@@ -21,8 +21,8 @@ class _WithPrimaryKey(PydanticBaseModel):
 
 class _WithTimestamps(PydanticBaseModel):
     created_at: datetime.datetime = None
-    updated_at: datetime.datetime = None
-    deleted_at: datetime.datetime = None
+    updated_at: datetime.datetime|None = None
+    deleted_at: datetime.datetime|None = None
 
 
 class _WithVersion(PydanticBaseModel):
@@ -190,7 +190,7 @@ class Base(metaclass=BaseMeta):
             if field.is_reference
         ]
         # build & execute SQL
-        sql = f"CREATE TABLE {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
+        sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
         cls._execute(sql)
 
     # UPDATE
@@ -204,6 +204,9 @@ class Base(metaclass=BaseMeta):
 
         # versioning: insert a new version
         if isinstance(self, _WithVersion):
+            d = {name
+                                          for name, value in self.__dict__.items()
+                                          if  name[0] != "_"}
             new_instance = self.__class__(**{name: value
                                           for name, value in self.__dict__.items()
                                           if name not in self._DEFAULT_FIELDS
@@ -293,7 +296,7 @@ class Base(metaclass=BaseMeta):
             order_columns += list(cls._VERSIONING_ALONG)
             order_columns += ["version"]
         else:
-            sql += ["id"]
+            order_columns += ["id"]
         sql += f"\nORDER BY {", ".join(f"{cls._get_table_name()}.{column}" + (" DESC" if reversed else "")
                                        for column in order_columns)}"
         if not as_collection:
