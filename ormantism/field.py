@@ -13,6 +13,14 @@ from .utils.get_base_type import get_base_type
 from .utils.rebuild_pydantic_model import rebuild_pydantic_model
 
 
+SCALARS = {
+    bool: {"type": "boolean"},
+    str: {"type": "string"},
+    int: {"type": "integer"},
+    float: {"type": "number"},
+}
+
+
 @dataclass
 class Field:
     model: "Base"
@@ -64,12 +72,11 @@ class Field:
             list: "JSON",
             dict: "JSON",
             type[PydanticBaseModel]: "JSON",
+            type: "JSON",
         }
         if inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, enum.Enum):
             sql = f"{self.column_name} TEXT CHECK({self.column_name} in ('{"', '".join(e.value for e in self.column_base_type)}'))"
         elif inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, PydanticBaseModel):
-            sql = f"{self.column_name} JSON"
-        elif self.full_type == type[PydanticBaseModel]:
             sql = f"{self.column_name} JSON"
         elif self.column_base_type in translate_type:
             sql = f"{self.column_name} {translate_type[self.column_base_type]}"
@@ -95,8 +102,14 @@ class Field:
             return value.value
         if self.is_reference:
             return value.id if value else None
-        if inspect.isclass(value) and issubclass(value, PydanticBaseModel):
-            return json.dumps(value.model_json_schema(), ensure_ascii=False, indent=0)
+        if inspect.isclass(value):
+            if issubclass(value, PydanticBaseModel):
+                schema = value.model_json_schema()
+            elif value in SCALARS:
+                schema = {"type": SCALARS[value]}
+            else:
+                raise TypeError(f"Unrecognized type: {value}; should be either scalar, or subclass of BaseModel")
+            return json.dumps(schema, ensure_ascii=False, indent=0)
         if isinstance(value, PydanticBaseModel):
             return value.model_dump_json()
         raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`")
@@ -110,8 +123,16 @@ class Field:
             return datetime.datetime.fromisoformat(value)
         if self.base_type in (dict, list):
             return json.loads(value)
-        if self.full_type == type[PydanticBaseModel]:
-            return rebuild_pydantic_model(json.loads(value))
+        if self.base_type == type:
+            if isinstance(value, str):
+                value = json.loads(value)
+            if not isinstance(value, dict):
+                raise ValueError("Type representation should be stored as a `dict`")
+            if self.full_type == type[PydanticBaseModel]:
+                return rebuild_pydantic_model(json.loads(value))
+            matches = [k for k, v in SCALARS.items() if v == value["type"]]
+            if matches:
+                return matches[0]
         if issubclass(self.base_type, PydanticBaseModel):
             return self.base_type.model_construct(**json.loads(value))
         raise ValueError(f"Cannot parse value `{value}` of type `{type(value)}` for field `{self.name}`")

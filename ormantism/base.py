@@ -1,6 +1,5 @@
 import sqlite3
 import datetime
-import dataclasses
 import logging
 from functools import cache
 
@@ -9,7 +8,7 @@ from pydantic._internal._model_construction import ModelMetaclass
 
 from .utils.make_hashable import make_hashable
 from .database import transaction
-from .field import Field
+from .field import Field, SCALARS
 
 
 logger = logging.getLogger("ormantism")
@@ -18,16 +17,15 @@ logger = logging.getLogger("ormantism")
 class _WithPrimaryKey(PydanticBaseModel):
     id: int = None
 
-
-class _WithTimestamps(PydanticBaseModel):
-    created_at: datetime.datetime = None
-    updated_at: datetime.datetime|None = None
+class _WithSoftDelete(PydanticBaseModel):
     deleted_at: datetime.datetime|None = None
 
+class _WithTimestamps(_WithSoftDelete):
+    created_at: datetime.datetime = None
+    updated_at: datetime.datetime|None = None
 
-class _WithVersion(PydanticBaseModel):
+class _WithVersion(_WithSoftDelete):
     version: int = 0
-    is_active: bool = True
 
 
 class BaseMeta(ModelMetaclass):
@@ -57,12 +55,12 @@ class BaseMeta(ModelMetaclass):
 
 
 class Base(metaclass=BaseMeta):
-    id: int = None
 
     model_config = PydanticConfigDict(
         arbitrary_types_allowed = True,
         json_encoders = {
-            type[PydanticBaseModel]: lambda v: v.__name__
+            type[PydanticBaseModel]: lambda v: v.model_json_schema(),
+            type: lambda v: {"type": SCALARS[v]},
         },
     )
 
@@ -76,7 +74,7 @@ class Base(metaclass=BaseMeta):
         data = self._get_columns_data() | {"id": None}
         # special column for versioning
         if isinstance(self, _WithVersion):
-            sql = f"UPDATE {self._get_table_name()} SET is_active = false WHERE is_active "
+            sql = f"UPDATE {self._get_table_name()} SET updated_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL "
             values = []
             for name, value in data.items():
                 if name not in self._VERSIONING_ALONG:
@@ -89,7 +87,6 @@ class Base(metaclass=BaseMeta):
             sql += " RETURNING version"
             row = self._execute(sql, values).fetchone()
             data["version"] = self.__dict__["version"] = (row[0] + 1) if row else 0
-            data["is_active"] = True
         # perform insertion
         sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
         self._execute(sql, list(data.values()))
@@ -248,7 +245,7 @@ class Base(metaclass=BaseMeta):
 
     # DELETE
     def delete(self):
-        if isinstance(self, _WithTimestamps):
+        if isinstance(self, _WithSoftDelete):
             self._execute(f"UPDATE {self._get_table_name()} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", [self.id])
         else:
             self._execute(f"DELETE FROM {self._get_table_name()} WHERE id = ?", [self.id])
