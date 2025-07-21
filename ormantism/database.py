@@ -1,6 +1,10 @@
 import urllib.parse
 from functools import cache
 from contextlib import contextmanager
+from logging import getLogger
+
+
+logger = getLogger(__name__)
 
 
 class DatabaseConnectionError(Exception):
@@ -60,15 +64,19 @@ class Database:
     def transaction(self):
         """Context manager for database transactions with automatic rollback on exception."""
         conn = self.connection
+        logger.info("ENTER")
         try:
             # Begin transaction
             yield conn
             # If we reach here, no exception occurred, so commit
+            logger.info("COMMIT")
             conn.commit()
-        except Exception:
+        except Exception as error:
             # Roll back the transaction on any exception
+            logger.warning("ROLLBACK %s: %s", error.__class__.__name__, str(error))
             conn.rollback()
-            raise  # Re-raise the exception
+            raise error
+        logger.info("EXIT")
     
     def close(self):
         self.connection.close()

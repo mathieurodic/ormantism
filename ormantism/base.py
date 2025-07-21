@@ -67,11 +67,24 @@ class Base(metaclass=BaseMeta):
     def __hash__(self):
         return hash(make_hashable(self))
 
+    # SELECT / INSERT
+    @classmethod
+    def load_or_create(cls, _search_fields=None, **data):
+        if _search_fields:
+            loaded = cls.load(**{key: data[key] for key in _search_fields})
+        else:
+            loaded = cls.load(**data)
+        if loaded:
+            return loaded
+        return cls(**data)
+
     # INSERT
     def model_post_init(self, __context: any) -> None:
         if self.id is not None and self.id >= 0:
             return
         data = self._get_columns_data() | {"id": None}
+        if isinstance(self, _WithTimestamps):
+            data.pop("created_at", None)
         # special column for versioning
         if isinstance(self, _WithVersion):
             sql = f"UPDATE {self._get_table_name()} SET updated_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL "
@@ -232,13 +245,8 @@ class Base(metaclass=BaseMeta):
             else:
                 sql += " = ?"
                 parameters += [value.id if field.is_reference else field.serialize(value)]
-        if isinstance(self, _WithTimestamps):
-            sql += ", updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING updated_at"
-        else:
-            sql += " WHERE id = ?"
-        cursor = self._execute(sql, parameters + [self.id])
-        if isinstance(self, _WithTimestamps):
-            self.__dict__["updated_at"] = cursor.fetchone()[0]
+        sql += " WHERE id = ?"
+        self._execute(sql, parameters + [self.id])
         # trigger
         if hasattr(self, "__post_update__"):
             self.__post_update__()
