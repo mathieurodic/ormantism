@@ -23,7 +23,7 @@ SCALARS = {
 
 @dataclass
 class Field:
-    model: "Base"
+    model: "Table"
     name: str
     base_type: type
     full_type: type
@@ -49,8 +49,14 @@ class Field:
     @classmethod
     def from_pydantic_info(cls, name: str, info: PydanticFieldInfo):
         from .utils.get_base_type import get_base_type
-        from .base import Base
+        from .base import Table
         base_type, column_is_required = get_base_type(info.annotation)
+        print(f"        {name}: {base_type}; {base_type.__mro__=}")
+        print()
+        print(Table, hash(Table))
+        for item in base_type.__mro__:
+            print(item, hash(item), Table==item)
+        print()
         return cls(model=cls,
                    name=name,
                    base_type=base_type,
@@ -58,7 +64,7 @@ class Field:
                    default=None if info.default == PydanticUndefined else info.default,
                    column_is_required=column_is_required,
                    is_required=column_is_required and info.is_required(),
-                   is_reference=issubclass(base_type, Base))
+                   is_reference=Table in base_type.__mro__)
 
     @property
     @cache
@@ -141,11 +147,11 @@ class Field:
 if __name__== "__main__":
     from typing import Optional
     from pydantic import Field as PydanticField
-    from .base import Base
+    from .base import Table
 
-    class Thing(Base):
+    class Thing(Table):
         pass
-    class Agent(Base):
+    class Agent(Table):
         birthed_by: Optional["Agent"]
         name: str
         description: str | None

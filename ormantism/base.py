@@ -1,23 +1,26 @@
-import sqlite3
+from copy import deepcopy
+from typing import ClassVar
+from contextlib import contextmanager
 import datetime
 import logging
 from functools import cache
 
-from pydantic import BaseModel as PydanticBaseModel, ConfigDict as PydanticConfigDict
+from pydantic import BaseModel
 from pydantic._internal._model_construction import ModelMetaclass
 
+from .utils.supermodel import SuperModel
 from .utils.make_hashable import make_hashable
-from .database import transaction
+from .transaction import transaction
 from .field import Field, SCALARS
 
 
 logger = logging.getLogger("ormantism")
 
 
-class _WithPrimaryKey(PydanticBaseModel):
+class _WithPrimaryKey(SuperModel):
     id: int = None
 
-class _WithSoftDelete(PydanticBaseModel):
+class _WithSoftDelete(SuperModel):
     deleted_at: datetime.datetime|None = None
 
 class _WithTimestamps(_WithSoftDelete):
@@ -28,14 +31,16 @@ class _WithVersion(_WithSoftDelete):
     version: int = 0
 
 
-class BaseMeta(ModelMetaclass):
+class TableMeta(ModelMetaclass):
 
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool=True,
                 with_timestamps: bool=False,
                 versioning_along: tuple[str]=None,
+                connection_name: str="default",
                 **kwargs):
-        default_bases: tuple[type[PydanticBaseModel]] = tuple()
+        default_bases: tuple[type[SuperModel]] = tuple()
+        # default_bases: tuple[type[SuperModel]] = (Table,)
         if with_primary_key:
             default_bases += (_WithPrimaryKey,)
         if with_timestamps:
@@ -44,30 +49,33 @@ class BaseMeta(ModelMetaclass):
             default_bases += (_WithVersion,)
         bases += default_bases
         result = super().__new__(mcs, name, bases, namespace, **kwargs)
-        result._DEFAULT_FIELDS = sum((tuple(base.model_fields.keys())
-                                     for base in default_bases), start=())
+        result._READ_ONLY_FIELDS = sum((tuple(base.model_fields.keys())
+                                        for base in default_bases), start=())
         if versioning_along is None:
             for base in bases:
                 if getattr(base, "_VERSIONING_ALONG", None):
                     versioning_along = base._VERSIONING_ALONG
         result._VERSIONING_ALONG = versioning_along
+        result._CONNECTION_NAME = connection_name
         return result
 
 
-class Base(metaclass=BaseMeta):
+# class Table(SuperModel, metaclass=BaseMeta):
+class Table(metaclass=TableMeta):
 
-    model_config = PydanticConfigDict(
+    model_config = dict(
         arbitrary_types_allowed = True,
         json_encoders = {
-            type[PydanticBaseModel]: lambda v: v.model_json_schema(),
+            type[SuperModel]: lambda v: v.model_json_schema(),
             type: lambda v: {"type": SCALARS[v]},
         },
     )
+    CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
 
     def __hash__(self):
         return hash(make_hashable(self))
 
-    # SELECT / INSERT
+    # INSERT or SELECT
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
         if _search_fields:
@@ -79,17 +87,17 @@ class Base(metaclass=BaseMeta):
         return cls(**data)
 
     # INSERT
-    def model_post_init(self, __context: any) -> None:
+    def on_after_create(self, init_data: dict):
+        # if primary key already set: skip entirely
         if self.id is not None and self.id >= 0:
             return
-        data = self._get_columns_data() | {"id": None}
-        if isinstance(self, _WithTimestamps):
-            data.pop("created_at", None)
+        self.check_read_only(init_data)
+        init_data = self.process_data(init_data)
         # special column for versioning
         if isinstance(self, _WithVersion):
-            sql = f"UPDATE {self._get_table_name()} SET updated_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL "
+            sql = f"UPDATE {self._get_table_name()} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
             values = []
-            for name, value in data.items():
+            for name, value in init_data.items():
                 if name not in self._VERSIONING_ALONG:
                     continue
                 if value is None:
@@ -98,18 +106,13 @@ class Base(metaclass=BaseMeta):
                     sql += f" AND {name} = ?"
                     values.append(value)
             sql += " RETURNING version"
-            row = self._execute(sql, values).fetchone()
-            data["version"] = self.__dict__["version"] = (row[0] + 1) if row else 0
+            rows = self._execute(sql, values)
+            init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
         # perform insertion
-        sql = f"INSERT INTO {self._get_table_name()} ({", ".join(data.keys())})\nVALUES  ({", ".join("?" for v in data.values())})"
-        self._execute(sql, list(data.values()))
+        sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(init_data.keys())})\n"
+               f"VALUES ({", ".join("?" for v in init_data.values())})")
         # retrieve automatic columns from inserted row
-        more_columns = ", created_at" if isinstance(self, _WithTimestamps) else ""
-        cursor = self._execute(f"SELECT id{more_columns} FROM {self._get_table_name()} WHERE id = last_insert_rowid()")
-        row = cursor.fetchone()
-        self.__dict__["id"] = row[0]
-        if isinstance(self, _WithTimestamps):
-            self.__dict__["created_at"] = datetime.datetime.fromisoformat(row[1])
+        rows = self._execute_returning(sql, list(init_data.values()))
         # trigger
         if hasattr(self, "__post_init__"):
             self.__post_init__()
@@ -133,38 +136,40 @@ class Base(metaclass=BaseMeta):
         return {
             name: field
             for name, field in cls._get_fields().items()
-            if name not in cls._DEFAULT_FIELDS
+            if name not in cls._READ_ONLY_FIELDS
         }
 
     # execute SQL
+    
     @classmethod
-    def _execute_from(cls, t, sql: str, parameters: list=[]):
-        logger.debug(sql)
-        logger.debug(parameters)
-        try:
-            return t.execute(sql, parameters)
-        except sqlite3.OperationalError as e:
-            t.rollback()
-            if not str(e).startswith("no such table: "):
-                raise
+    def _execute(cls, sql: str, parameters: list=[], check=True) -> list[tuple]:
+        if check and not cls.CHECKED_TABLE_EXISTENCE:
             cls._create_table()
-            return t.execute(sql, parameters)
-
-    @classmethod
-    def _execute(cls, sql: str, parameters: list=[]):
-        try:
-            with transaction() as t:
-                return cls._execute_from(t, sql, parameters)
-        except sqlite3.OperationalError as e:
-            t.rollback()
-            if not str(e).startswith("cannot commit transaction - SQL statements in progress"):
-                raise
-            return cls._execute_from(t, sql, parameters)
-
+            cls.CHECKED_TABLE_EXISTENCE = True
+        # logger.debug(sql)
+        # logger.debug(parameters)
+        print()
+        print(sql)
+        print(tuple(parameters))
+        with transaction(connection_name=cls._CONNECTION_NAME) as t:
+            cursor = t.execute(sql, parameters)
+            result = cursor.fetchall()
+            cursor.close()
+        print(result)
+        print()
+        return result
+    
+    def _execute_returning(self, sql: str, parameters: list=[]):
+        if self._READ_ONLY_FIELDS:
+            sql += "\nRETURNING " + ", ".join(self._READ_ONLY_FIELDS)
+        rows = self._execute(sql, parameters)
+        for name, value in zip(self._READ_ONLY_FIELDS, rows[0]):
+            BaseModel.__setattr__(self, name, value)
+        
     # CREATE TABLE
 
     @classmethod
-    def _create_table(cls, created: set[type["Base"]]=set()):
+    def _create_table(cls, created: set[type["Table"]]=set()):
         # create tables for references first
         created.add(cls)
         for field in cls._get_fields().values():
@@ -201,55 +206,56 @@ class Base(metaclass=BaseMeta):
         ]
         # build & execute SQL
         sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
-        cls._execute(sql)
+        cls._execute(sql, check=False)
 
-    # UPDATE
-    def __setattr__(self, name, value):
-        self.__dict__[name] = value
-        if name[0] == "_" or name not in self._get_fields():
-            return
-        self.update(**{name: value})
-
-    def update(self, **kwargs):
-
-        # versioning: insert a new version
-        if isinstance(self, _WithVersion):
-            d = {name
-                                          for name, value in self.__dict__.items()
-                                          if  name[0] != "_"}
-            new_instance = self.__class__(**{name: value
-                                          for name, value in self.__dict__.items()
-                                          if name not in self._DEFAULT_FIELDS
-                                          and name in self._get_fields()})
-            self.__dict__.update(new_instance.__dict__)
-            # trigger
-            if hasattr(self, "__post_update__"):
-                self.__post_update__()
-            return
-
-        # other cases: actually update
-        self.__dict__.update(kwargs)
-        sql = f"UPDATE {self._get_table_name()} SET "
-        parameters = []
-        for i, (name, value) in enumerate(kwargs.items()):
-            field = self._get_field(name)
-            if value is not None and not isinstance(value, field.base_type):
-                raise ValueError(f"Wrong type for `{self.__class__.__name__}.{name}`: {type(value)}")
-            if i:
-                sql += ", "
-            sql += name
+    def check_read_only(self, data):
+        """Check we are not attempting to alter read-only fields"""
+        read_only_fields = list(set(data) & set(self._READ_ONLY_FIELDS))
+        read_only_fields_count = len(read_only_fields)
+        if read_only_fields_count:
+            plural = "s" if read_only_fields_count > 1 else ""
+            raise AttributeError(f"Cannot set read-only attribute{plural} of {self.__class__.__name__}: {", ".join(read_only_fields)}")
+        
+    def process_data(self, data: dict) -> dict:
+        data = deepcopy(data)
+        for name in data:
+            # is there no field for this name?
+            try:
+                field = self._get_field(name)
+            except KeyError:
+                continue
+            # so, there is.
+            print(field)
             if field.is_reference:
-                sql += "_id"
-            if value is None:
-                sql += " = NULL"
+                # references are special
+                referred = getattr(self, name, None)
+                data[field.column_name] = referred.id if referred else None
             else:
-                sql += " = ?"
-                parameters += [value.id if field.is_reference else field.serialize(value)]
-        sql += " WHERE id = ?"
-        self._execute(sql, parameters + [self.id])
-        # trigger
-        if hasattr(self, "__post_update__"):
-            self.__post_update__()
+                # others are just plain data
+                data |= self.model_dump(mode="json",
+                                        include={name})
+        return data
+
+    def on_before_update(self, new_data):
+        self.check_read_only(new_data)
+
+    def on_after_update(self, old_data):
+        """Apply changes to database"""
+        # fill SET statement
+        set_statement = self.process_data(old_data)
+        # fill WHERE statement
+        where_statement = {}
+        if isinstance(self, _WithPrimaryKey):
+            where_statement = {"id": self.id}
+        else:
+            raise NotImplementedError()
+        
+        # execute query
+        self._execute_returning(f"UPDATE {self._get_table_name()}\n"
+                                f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
+                                f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
+                                tuple(set_statement.values()) + tuple(where_statement.values()))
+
 
     # DELETE
     def delete(self):
@@ -260,7 +266,7 @@ class Base(metaclass=BaseMeta):
 
     # SELECT
     @classmethod
-    def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Base":
+    def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
         if not preload:
             preload = []
         if isinstance(preload, str):
@@ -309,19 +315,19 @@ class Base(metaclass=BaseMeta):
 
         # execute & return result
         if as_collection:
-            rows = cls._execute(sql, values).fetchall()
+            rows = cls._execute(sql, values)
             return [
                 join_info.get_instance(row)
                 for row in rows
             ]
         else:
-            row = cls._execute(sql, values).fetchone()
-            if row is None:
+            rows = cls._execute(sql, values)
+            if not rows:
                 return None
-            return join_info.get_instance(row)
+            return join_info.get_instance(rows[0])
 
     @classmethod
-    def load_all(cls, **criteria) -> list["Base"]:
+    def load_all(cls, **criteria) -> list["Table"]:
         return cls.load(as_collection=True, **criteria)
 
     # helper methods
@@ -329,7 +335,7 @@ class Base(metaclass=BaseMeta):
     def _get_columns_data(self) -> dict[str, any]:
         data = {}
         for field in self._get_fields().values():
-            if field.name in self._DEFAULT_FIELDS:
+            if field.name in self._READ_ONLY_FIELDS:
                 continue
             value = field.serialize(getattr(self, field.name))
             data[field.column_name] = value
@@ -362,7 +368,7 @@ class Base(metaclass=BaseMeta):
             delattr(cls, "__setattr_backup__")
 
     @classmethod
-    def _add_lazy_loader(cls, name: str, model: type["Base"]):
+    def _add_lazy_loader(cls, name: str, model: type["Table"]):
         def lazy_loader(self):
             if not name in self.__dict__:
                 identifier = self._lazy_identifiers.get(name)
@@ -382,41 +388,41 @@ class Base(metaclass=BaseMeta):
 
 
 if __name__ == "__main__":
-    from .database import connect
+
+    from .connection import connect
     connect("sqlite:///:memory:")
 
-    class Document(Base, versioning_along="name"):
-        name: str
-        content: str
-    d1 = Document(name="foo", content="azertyuiop")
-    d2 = Document(name="foo", content="azertyuiopqsdfghjlm")
-    print(d1)
-    print(d2)
-    d2.content += " :)"
-    print(d2)
-    exit()
+    # class Document(Table, versioning_along="name"):
+    #     name: str
+    #     content: str
+    # d1 = Document(name="foo", content="azertyuiop")
+    # d2 = Document(name="foo", content="azertyuiopqsdfghjlm")
+    # print(d1)
+    # print(d2)
+    # d2.content += " :)"
+    # print(d2)
+    # exit()
     
     # company model
-    class Company(Base):
+    class Company(Table):
         name: str
     # employee model, with a foreign key to company
-    class Employee(Base):
+    class Employee(Table):
         firstname: str
         lastname: str
         company: Company
     # show columns
     c1 = Company.load(id=4)
-    c2 = Company.load(name="AutoKod", last_created=True)
-    c3 = Company.load(name="AutoKod II", last_created=True)
+    c2 = Company.load(name="AutoKod")
+    c3 = Company.load(name="AutoKod II")
     c4 = Company(name="AutoKod")
     c5 = Company(name="AutoKod")
     c5.name += " II"
-    c5.save()
-    print(c1)
-    print(c2)
-    print(c3)
-    print(c4)
-    e1 = Employee(firstname="Mathieu", lastname="Rodic", company=c1)
+    print(f"{c1=}")
+    print(f"{c2=}")
+    print(f"{c3=}")
+    print(f"{c4=}")
+    e1 = Employee(firstname="Mathieu", lastname="Rodic", company=c5)
     e2 = Employee.load(company_id=c1.id, last_created=True)
     e_all = Employee.load_all(company_id=c1.id)
     print(e1)
@@ -430,12 +436,12 @@ if __name__ == "__main__":
 
     #
 
-    class A(Base, with_timestamps=False): pass
+    class A(Table, with_timestamps=False): pass
     print()
     print(A._get_fields())
     print(A._get_columns())
     print()
-    class B(Base, with_timestamps=True):
+    class B(Table, with_timestamps=True):
         value: int = 42
     print()
     print(B._get_fields())
@@ -445,7 +451,7 @@ if __name__ == "__main__":
     b.value = 69
     print(B.load(id=b.id).value)
     print()
-    class C(Base, with_timestamps=True):
+    class C(Table, with_timestamps=True):
         links_to: B = None
     print()
     print(C._get_fields())

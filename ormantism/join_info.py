@@ -2,11 +2,11 @@ from collections import defaultdict
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic.fields import Field as PydanticField
 
-from .base import Base
+from .base import Table, TableMeta
 
 
 class JoinInfo(PydanticBaseModel):
-    model: type[Base]
+    model: type
     children: dict[str, "JoinInfo"] = PydanticField(default_factory=dict)
 
     def add_children(self, path: list[str]):
@@ -53,7 +53,7 @@ class JoinInfo(PydanticBaseModel):
             item[path[-1]] = value
         return data
     
-    def get_instance(self, row: tuple) -> Base:
+    def get_instance(self, row: tuple) -> Table:
         _lazy_identifiers = {}
         def _get_instance_recursive(data: dict, info: JoinInfo):
             for name, field in info.model._get_fields().items():
