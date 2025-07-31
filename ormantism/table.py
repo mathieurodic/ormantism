@@ -109,10 +109,15 @@ class Table(metaclass=TableMeta):
             rows = self._execute(sql, values)
             init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
         # perform insertion
-        sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(init_data.keys())})\n"
-               f"VALUES ({", ".join("?" for v in init_data.values())})")
+        if init_data:
+            sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(init_data.keys())})\n"
+                f"VALUES ({", ".join("?" for v in init_data.values())})")
+        else:
+            sql = f"INSERT INTO {self._get_table_name()} DEFAULT VALUES"
         # retrieve automatic columns from inserted row
-        rows = self._execute_returning(sql, list(init_data.values()))
+        self._execute_returning(sql=sql,
+                                parameters=list(init_data.values()),
+                                for_insertion=True)
         # trigger
         if hasattr(self, "__post_init__"):
             self.__post_init__()
@@ -159,11 +164,16 @@ class Table(metaclass=TableMeta):
         print()
         return result
     
-    def _execute_returning(self, sql: str, parameters: list=[]):
+    def _execute_returning(self, sql: str, parameters: list=[], for_insertion=False):
+        returned_fields = set(self._READ_ONLY_FIELDS)
+        if for_insertion:
+            for name, field in self._get_fields().items():
+                if not field.is_reference and field.default is not None:
+                    returned_fields.add(name)
         if self._READ_ONLY_FIELDS:
-            sql += "\nRETURNING " + ", ".join(self._READ_ONLY_FIELDS)
+            sql += "\nRETURNING " + ", ".join(returned_fields)
         rows = self._execute(sql, parameters)
-        for name, value in zip(self._READ_ONLY_FIELDS, rows[0]):
+        for name, value in zip(returned_fields, rows[0]):
             BaseModel.__setattr__(self, name, value)
         
     # CREATE TABLE
@@ -215,34 +225,33 @@ class Table(metaclass=TableMeta):
         if read_only_fields_count:
             plural = "s" if read_only_fields_count > 1 else ""
             raise AttributeError(f"Cannot set read-only attribute{plural} of {self.__class__.__name__}: {", ".join(read_only_fields)}")
-        
-    def process_data(self, data: dict) -> dict:
+
+    @classmethod
+    def process_data(cls, data: dict) -> dict:
         data = deepcopy(data)
-        for name in data:
+        for name in list(data):
             # is there no field for this name?
             try:
-                field = self._get_field(name)
+                field = cls._get_field(name)
             except KeyError:
                 continue
             # so, there is.
-            print(field)
             if field.is_reference:
                 # references are special
-                referred = getattr(self, name, None)
+                referred = data.pop(name)
                 data[field.column_name] = referred.id if referred else None
             else:
-                # others are just plain data
-                data |= self.model_dump(mode="json",
-                                        include={name})
+                value = data[name]
+                if isinstance(value, BaseModel):
+                    data[name] = value.model_dump(mode="json")
         return data
 
     def on_before_update(self, new_data):
-        self.check_read_only(new_data)
-
-    def on_after_update(self, old_data):
         """Apply changes to database"""
+        # ensure we're not trying to write read-only fields
+        self.check_read_only(new_data)
         # fill SET statement
-        set_statement = self.process_data(old_data)
+        set_statement = self.process_data(new_data)
         # fill WHERE statement
         where_statement = {}
         if isinstance(self, _WithPrimaryKey):
@@ -251,11 +260,10 @@ class Table(metaclass=TableMeta):
             raise NotImplementedError()
         
         # execute query
-        self._execute_returning(f"UPDATE {self._get_table_name()}\n"
-                                f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
-                                f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
-                                tuple(set_statement.values()) + tuple(where_statement.values()))
-
+        self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
+                                    f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
+                                    f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
+                                parameters=tuple(set_statement.values()) + tuple(where_statement.values()),)
 
     # DELETE
     def delete(self):
@@ -290,14 +298,13 @@ class Table(metaclass=TableMeta):
         if issubclass(cls, _WithTimestamps) and not with_deleted:
             criteria = dict(deleted_at=None, **criteria)
         if criteria:
-            for name, value in criteria.items():
-                field = cls._get_field(name)
-                sql += f"\nAND {cls._get_table_name()}.{field.column_name}"
+            for name, value in cls.process_data(criteria).items():
+                sql += f"\nAND {cls._get_table_name()}.{name}"
                 if value is None:
                     sql += " IS NULL"
                 else:
                     sql += " = ?"
-                    values.append(field.serialize(value))
+                    values.append(value)
 
         # ORDER & LIMIT
         order_columns = []
@@ -331,15 +338,6 @@ class Table(metaclass=TableMeta):
         return cls.load(as_collection=True, **criteria)
 
     # helper methods
-
-    def _get_columns_data(self) -> dict[str, any]:
-        data = {}
-        for field in self._get_fields().values():
-            if field.name in self._READ_ONLY_FIELDS:
-                continue
-            value = field.serialize(getattr(self, field.name))
-            data[field.column_name] = value
-        return data
 
     @classmethod
     def _get_table_name(cls) -> str:
@@ -460,7 +458,6 @@ if __name__ == "__main__":
     print()
     print(C().id)
     print(C().created_at)
-    print(C()._get_columns_data())
     # print(C().delete())
     print()
     print("((((((( 2.0 )))))))")

@@ -49,14 +49,8 @@ class Field:
     @classmethod
     def from_pydantic_info(cls, name: str, info: PydanticFieldInfo):
         from .utils.get_base_type import get_base_type
-        from .base import Table
+        from .table import Table
         base_type, column_is_required = get_base_type(info.annotation)
-        print(f"        {name}: {base_type}; {base_type.__mro__=}")
-        print()
-        print(Table, hash(Table))
-        for item in base_type.__mro__:
-            print(item, hash(item), Table==item)
-        print()
         return cls(model=cls,
                    name=name,
                    base_type=base_type,
@@ -64,7 +58,7 @@ class Field:
                    default=None if info.default == PydanticUndefined else info.default,
                    column_is_required=column_is_required,
                    is_required=column_is_required and info.is_required(),
-                   is_reference=Table in base_type.__mro__)
+                   is_reference=issubclass(base_type, Table))
 
     @property
     @cache
@@ -90,6 +84,8 @@ class Field:
             raise TypeError(f"Type `{self.column_base_type}` of `{self.model.__name__}.{self.column_name}` has no known conversion to SQL type")
         if self.column_is_required:
             sql += " NOT NULL"
+        if self.default is not None:
+            sql += f" DEFAULT {self.default}"
         return sql
 
     def __hash__(self):
@@ -147,7 +143,7 @@ class Field:
 if __name__== "__main__":
     from typing import Optional
     from pydantic import Field as PydanticField
-    from .base import Table
+    from .table import Table
 
     class Thing(Table):
         pass

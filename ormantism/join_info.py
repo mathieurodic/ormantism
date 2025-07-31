@@ -2,7 +2,7 @@ from collections import defaultdict
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic.fields import Field as PydanticField
 
-from .base import Table, TableMeta
+from .table import Table
 
 
 class JoinInfo(PydanticBaseModel):
