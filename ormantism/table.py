@@ -126,7 +126,7 @@ class Table(metaclass=TableMeta):
     @cache
     def _get_fields(cls) -> dict[str, Field]:
         return {
-            name: Field.from_pydantic_info(name, info)
+            name: Field.from_pydantic_info(cls, name, info)
             for name, info in cls.model_fields.items()
         }
     
@@ -383,108 +383,3 @@ class Table(metaclass=TableMeta):
             if field.is_reference:
                 cls._add_lazy_loader(name, field.base_type)
         cls._has_lazy_loaders = True
-
-
-if __name__ == "__main__":
-
-    from .connection import connect
-    connect("sqlite:///:memory:")
-
-    # class Document(Table, versioning_along="name"):
-    #     name: str
-    #     content: str
-    # d1 = Document(name="foo", content="azertyuiop")
-    # d2 = Document(name="foo", content="azertyuiopqsdfghjlm")
-    # print(d1)
-    # print(d2)
-    # d2.content += " :)"
-    # print(d2)
-    # exit()
-    
-    # company model
-    class Company(Table):
-        name: str
-    # employee model, with a foreign key to company
-    class Employee(Table):
-        firstname: str
-        lastname: str
-        company: Company
-    # show columns
-    c1 = Company.load(id=4)
-    c2 = Company.load(name="AutoKod")
-    c3 = Company.load(name="AutoKod II")
-    c4 = Company(name="AutoKod")
-    c5 = Company(name="AutoKod")
-    c5.name += " II"
-    print(f"{c1=}")
-    print(f"{c2=}")
-    print(f"{c3=}")
-    print(f"{c4=}")
-    e1 = Employee(firstname="Mathieu", lastname="Rodic", company=c5)
-    e2 = Employee.load(company_id=c1.id, last_created=True)
-    e_all = Employee.load_all(company_id=c1.id)
-    print(e1)
-    print(e2)
-    print(e_all)
-    exit()
-    # e = Employee.load(id=23)
-    print(Company._get_columns_names())
-    print(Employee._get_columns_names())
-    print(Company._build_instance({"id": 12, "name": "Hello :)"}))
-
-    #
-
-    class A(Table, with_timestamps=False): pass
-    print()
-    print(A._get_fields())
-    print(A._get_columns())
-    print()
-    class B(Table, with_timestamps=True):
-        value: int = 42
-    print()
-    print(B._get_fields())
-    print(B._get_columns())
-    print(B().id)
-    b = B()
-    b.value = 69
-    print(B.load(id=b.id).value)
-    print()
-    class C(Table, with_timestamps=True):
-        links_to: B = None
-    print()
-    print(C._get_fields())
-    print(C._get_columns())
-    print()
-    print()
-    print(C().id)
-    print(C().created_at)
-    # print(C().delete())
-    print()
-    print("((((((( 2.0 )))))))")
-    c = C.load(id=1)
-    print("((((((( 2.1 )))))))")
-    c.links_to = B()
-    print("((((((( 2.2 )))))))")
-    print()
-    # explicit pre-loading
-    c = C.load(id=1, preload="links_to")
-    print("((((((( 3.0 )))))))")
-    print(c)
-    print("((((((( 3.1 )))))))")
-    print(c.links_to)
-    print("((((((( 3.2 )))))))")
-    print(c)
-    print("((((((( 3.3 )))))))")
-    print()
-    # lazy loading
-    c = C.load(id=1)
-    print("((((((( 4.0 )))))))")
-    print(c)
-    print("((((((( 4.1 )))))))")
-    print(c.links_to)
-    print("((((((( 4.2 )))))))")
-    print(c.links_to)
-    print("((((((( 4.3 )))))))")
-    print(c)
-    print("((((((( 4.4 )))))))")
-    print()

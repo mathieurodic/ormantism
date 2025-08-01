@@ -23,7 +23,7 @@ SCALARS = {
 
 @dataclass
 class Field:
-    model: "Table"
+    table: "Table"
     name: str
     base_type: type
     full_type: type
@@ -47,11 +47,11 @@ class Field:
         return self.base_type
 
     @classmethod
-    def from_pydantic_info(cls, name: str, info: PydanticFieldInfo):
+    def from_pydantic_info(cls, table: "Table", name: str, info: PydanticFieldInfo):
         from .utils.get_base_type import get_base_type
         from .table import Table
         base_type, column_is_required = get_base_type(info.annotation)
-        return cls(model=cls,
+        return cls(table=table,
                    name=name,
                    base_type=base_type,
                    full_type=info.annotation,
@@ -81,7 +81,7 @@ class Field:
         elif self.column_base_type in translate_type:
             sql = f"{self.column_name} {translate_type[self.column_base_type]}"
         else:
-            raise TypeError(f"Type `{self.column_base_type}` of `{self.model.__name__}.{self.column_name}` has no known conversion to SQL type")
+            raise TypeError(f"Type `{self.column_base_type}` of `{self.table.__name__}.{self.column_name}` has no known conversion to SQL type")
         if self.column_is_required:
             sql += " NOT NULL"
         if self.default is not None:
@@ -138,30 +138,3 @@ class Field:
         if issubclass(self.base_type, PydanticBaseModel):
             return self.base_type.model_construct(**json.loads(value))
         raise ValueError(f"Cannot parse value `{value}` of type `{type(value)}` for field `{self.name}`")
-
-
-if __name__== "__main__":
-    from typing import Optional
-    from pydantic import Field as PydanticField
-    from .table import Table
-
-    class Thing(Table):
-        pass
-    class Agent(Table):
-        birthed_by: Optional["Agent"]
-        name: str
-        description: str | None
-        thing: Thing
-        system_input: str
-        bot_name: str
-        tools: list[str]
-        max_iterations: int = 10
-        temperature: float = 0.3
-        with_input_improvement: bool = True
-        conversation: list[str] = PydanticField(default_factory=list)
-
-    for name, info in Agent.model_fields.items():
-        print()
-        print(name)
-        print(Field.from_pydantic_info(name, info))
-        print()
