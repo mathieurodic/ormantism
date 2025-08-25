@@ -55,14 +55,11 @@ class TableMeta(ModelMetaclass):
         # start building result
         result = super().__new__(mcs, name, bases + default_bases, namespace, **kwargs)
         # connection name
-        print(f"{name=}")
-        print(f"{connection_name=}")
         if not connection_name:
             for base in bases:
                 print(base, base._CONNECTION_NAME)
                 if base._CONNECTION_NAME:
                     connection_name = base._CONNECTION_NAME
-        print(f"{connection_name=}")
         result._CONNECTION_NAME = connection_name
         # versioning
         if versioning_along is None:
