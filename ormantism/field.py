@@ -1,8 +1,9 @@
+from __future__ import annotations
 import enum
 import json
 import inspect
 import datetime
-from typing import Optional
+from typing import Optional, Any
 from functools import cache
 from dataclasses import dataclass, asdict
 
@@ -12,6 +13,7 @@ from pydantic_core import PydanticUndefined
 
 from .utils.get_base_type import get_base_type
 from .utils.rebuild_pydantic_model import rebuild_pydantic_model
+from .utils.make_hashable import make_hashable
 
 
 # Which values are considered scalar
@@ -23,8 +25,9 @@ SCALARS = {
 }
 
 
-# Define the JSON type recursively
-JSON = None, bool, int, float, str, list["JSON"], dict[str, "JSON"]
+# Define the JSON type
+# JSON: None | bool | int | float | str | list["JSON"] | dict[str, "JSON"]
+JSON = Any
 
 
 @dataclass
@@ -106,7 +109,7 @@ class Field:
         return sql
 
     def __hash__(self):
-        return hash(tuple(asdict(self).items()))
+        return hash(make_hashable(tuple(asdict(self).items())))
 
     # conversion
 
@@ -138,13 +141,15 @@ class Field:
     def parse(self, value: any):
         if value is None:
             return None
+        if issubclass(self.base_type, BaseModel):
+            return self.base_type(**json.loads(value))
         if self.base_type in (int, float, str, bool):
             return self.base_type(value)
         if self.base_type == datetime.datetime and isinstance(value, str):
             return datetime.datetime.fromisoformat(value)
         if self.base_type in (dict, list, JSON):
             return json.loads(value)
-        if self.base_type == type:
+        if self.base_type == type and not isinstance(value, type):
             if isinstance(value, str):
                 value = json.loads(value)
             if not isinstance(value, dict):
@@ -154,6 +159,4 @@ class Field:
             matches = [k for k, v in SCALARS.items() if v == value["type"]]
             if matches:
                 return matches[0]
-        if issubclass(self.base_type, BaseModel):
-            return self.base_type.model_construct(**json.loads(value))
         raise ValueError(f"Cannot parse value `{value}` of type `{type(value)}` for field `{self.name}`")

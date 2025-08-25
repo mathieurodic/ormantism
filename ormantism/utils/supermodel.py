@@ -141,7 +141,6 @@ class SuperModel(BaseModel):
                     continue
                 value = getattr(self, key)
                 if is_type_annotation(value):
-                    print("TYPE")
                     include.remove(key)
                     exclude.add(key)
                     adapter = TypeAdapter(field_info.annotation)

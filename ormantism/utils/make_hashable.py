@@ -1,11 +1,9 @@
 import inspect
+import typing
 from pydantic import BaseModel
 
 
 def make_hashable(thing: any):
-    # pre-transform Pydantic models
-    if inspect.isclass(thing) and issubclass(thing, BaseModel):
-        thing = thing.model_json_schema()
     # pre-transform Pydantic model instances
     if isinstance(thing, BaseModel):
         thing = thing.model_dump()
@@ -21,6 +19,9 @@ def make_hashable(thing: any):
         return tuple(make_hashable(value) for value in thing)
     # scalar types
     if isinstance(thing, (int, float, str, type(None))):
+        return thing
+    # classes
+    if inspect.isclass(thing) or isinstance(thing, type) or typing.get_origin(thing):
         return thing
     # other
     raise ValueError(f"Cannot hash `{thing}`")
