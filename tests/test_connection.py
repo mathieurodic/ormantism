@@ -2,7 +2,7 @@ from ormantism.connection import _get_connection
 
 
 def test_file_connection(setup_db):
-    setup_db("default", "alternative")
+    setup_db(None, "alternative")
     print("\nTEST wrong name:")
     try:
         cn = _get_connection(name="nonexistent")

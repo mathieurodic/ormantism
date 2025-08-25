@@ -1,7 +1,11 @@
+import logging
 from copy import copy
-from typing import Any, Optional, Type
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, create_model, TypeAdapter
 from types import GenericAlias
+from .is_type_annotation import is_type_annotation
+
+
+logger = logging.getLogger(__name__)
 
 
 def to_json_schema(T: type) -> dict:
@@ -81,15 +85,11 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
     raise TypeError(f"Unsupported schema: {schema}")
 
 
-TYPE_ANNOTATIONS = (type, Type, Optional[type], Optional[Type])
-TYPE_CLASSES = (type, GenericAlias)
-
-
 class SuperModel(BaseModel):
 
     # instanciation
 
-    def __init__(self, /, **data: Any) -> None:
+    def __init__(self, /, **data: any) -> None:
         # for triggers
         init_data = copy(data)
         self.trigger("before_create", data)
@@ -97,7 +97,7 @@ class SuperModel(BaseModel):
         type_data = {}
         for key, value in data.items():
             field_info = self.__class__.model_fields.get(key)
-            if field_info.annotation in TYPE_ANNOTATIONS:
+            if is_type_annotation(value):
                 if isinstance(value, dict):
                     value = from_json_schema(value)
                 if isinstance(value, type):
@@ -118,29 +118,38 @@ class SuperModel(BaseModel):
     def model_dump(self, *, mode: str = 'python', include=None, exclude=None, 
                    by_alias: bool = False, exclude_unset: bool = False, 
                    exclude_defaults: bool = False, exclude_none: bool = False,
-                   round_trip: bool = False, warnings: bool = True) -> dict[str, Any]:
+                   round_trip: bool = False, warnings: bool = True) -> dict[str, any]:
         
         if exclude:
             exclude = copy(exclude)
         else:
             exclude = set()
 
+        if include:
+            include = copy(include)
+        else:
+            include = set(self.__class__.model_fields)
+
+
         result = {}
         if mode == "json":
             cls = self.__class__
             for key, field_info in cls.model_fields.items():
-                if include and key not in include:
+                if key not in include:
                     continue
                 if key in exclude:
                     continue
-                if field_info.annotation in TYPE_ANNOTATIONS:
+                value = getattr(self, key)
+                if is_type_annotation(value):
+                    print("TYPE")
+                    include.remove(key)
                     exclude.add(key)
-                    value = getattr(self, key)
-                    if isinstance(value, TYPE_CLASSES):
-                        try:
-                            result[key] = to_json_schema(value)
-                        except Exception as e:
-                            raise ValueError(f"Failed to serialize type field '{key}': {e}")
+                    adapter = TypeAdapter(field_info.annotation)
+                    adapter.validate_python(value)
+                    try:
+                        result[key] = to_json_schema(value)
+                    except Exception as e:
+                        raise ValueError(f"Failed to serialize type field '{key}': {e}")
         
         result |= BaseModel.model_dump(self,
             mode=mode, include=include, exclude=exclude,
@@ -154,15 +163,21 @@ class SuperModel(BaseModel):
     # modification
 
     def __setattr__(self, name, value):
+        if name.startswith("_"):
+            return BaseModel.__setattr__(self, name, value)
         self.update(**{name: value})
-        return getattr(self, name, value)
+        return getattr(self, name)
 
     def update(self, **new_data):
         cls = self.__class__
         # only consider really altered attributes
+        old_data = {name: getattr(self, name)
+               for name, value in new_data.items()}
         new_data = {name: value
                     for name, value in new_data.items()
-                    if value != getattr(self, name)}
+                    if not hasattr(self, name)
+                    or type(value) != type(getattr(self, name))
+                    or value != getattr(self, name)}
         if not new_data:
             return
         # keep track of old data (for last trigger)
@@ -171,10 +186,9 @@ class SuperModel(BaseModel):
         self.trigger("before_update", new_data=new_data)
         for name, value in new_data.items():
             field_info = cls.model_fields.get(name)
-            if field_info and field_info.annotation in TYPE_ANNOTATIONS:
-                if not isinstance(value, TYPE_CLASSES):
-                    raise ValueError(f"Invalid type for {name}: value")
-                object.__setattr__(self, name, value)
+            if field_info and is_type_annotation(field_info.annotation):
+                # TODO: better validation here
+                self.__dict__[name] = value
             else:
                 BaseModel.__setattr__(self, name, value)
         self.trigger("after_update", old_data=old_data)
@@ -183,7 +197,7 @@ class SuperModel(BaseModel):
 
     def trigger(self, event_name: str, *args, **kwargs):
         method_name = f"on_{event_name}"
-        called_methods = list()
+        called_methods = [getattr(SuperModel, method_name)]
         for cls in type(self).__mro__:
             if cls == SuperModel:
                 continue
@@ -191,8 +205,10 @@ class SuperModel(BaseModel):
             if not method or method in called_methods:
                 continue
             called_methods.append(method)
-            if method and method(self, *args, **kwargs) is False:
-                break
+            logger.info("Calling trigger %s for %s: %s", event_name, self.__class__.__name__, method)
+            if method:
+                if method(self, *args, **kwargs) is False:
+                    break
 
     def on_before_create(self, init_data: dict):
         pass

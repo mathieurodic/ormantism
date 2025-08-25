@@ -5,7 +5,7 @@ import datetime
 import logging
 from functools import cache
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 from pydantic._internal._model_construction import ModelMetaclass
 
 from .utils.supermodel import SuperModel
@@ -23,8 +23,10 @@ class _WithPrimaryKey(SuperModel):
 class _WithSoftDelete(SuperModel):
     deleted_at: datetime.datetime|None = None
 
-class _WithTimestamps(_WithSoftDelete):
+class _WithCreatedAtTimestamp(SuperModel):
     created_at: datetime.datetime = None
+
+class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete):
     updated_at: datetime.datetime|None = None
 
 class _WithVersion(_WithSoftDelete):
@@ -35,28 +37,43 @@ class TableMeta(ModelMetaclass):
 
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool=True,
+                with_created_at_timestamp: bool=False,
                 with_timestamps: bool=False,
                 versioning_along: tuple[str]=None,
-                connection_name: str="default",
+                connection_name: str=None,
                 **kwargs):
+        # inherited behaviors
         default_bases: tuple[type[SuperModel]] = tuple()
-        # default_bases: tuple[type[SuperModel]] = (Table,)
         if with_primary_key:
             default_bases += (_WithPrimaryKey,)
+        if with_created_at_timestamp:
+            default_bases += (_WithCreatedAtTimestamp,)
         if with_timestamps:
             default_bases += (_WithTimestamps,)
         if versioning_along:
             default_bases += (_WithVersion,)
-        bases += default_bases
-        result = super().__new__(mcs, name, bases, namespace, **kwargs)
-        result._READ_ONLY_FIELDS = sum((tuple(base.model_fields.keys())
-                                        for base in default_bases), start=())
+        # start building result
+        result = super().__new__(mcs, name, bases + default_bases, namespace, **kwargs)
+        # connection name
+        print(f"{name=}")
+        print(f"{connection_name=}")
+        if not connection_name:
+            for base in bases:
+                print(base, base._CONNECTION_NAME)
+                if base._CONNECTION_NAME:
+                    connection_name = base._CONNECTION_NAME
+        print(f"{connection_name=}")
+        result._CONNECTION_NAME = connection_name
+        # versioning
         if versioning_along is None:
             for base in bases:
                 if getattr(base, "_VERSIONING_ALONG", None):
                     versioning_along = base._VERSIONING_ALONG
         result._VERSIONING_ALONG = versioning_along
-        result._CONNECTION_NAME = connection_name
+        # read-only
+        result._READ_ONLY_FIELDS = sum((tuple(base.model_fields.keys())
+                                        for base in default_bases), start=())
+        # here we go :)
         return result
 
 
@@ -71,6 +88,11 @@ class Table(metaclass=TableMeta):
         },
     )
     CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
+
+    def __eq__(self, other: "Table"):
+        if not isinstance(other, self.__class__):
+            raise ValueError(f"Comparing instances of different classes: {self.__class__} and {other.__class__}")
+        return hash(self) == hash(other)
 
     def __hash__(self):
         return hash(make_hashable(self))
@@ -108,15 +130,29 @@ class Table(metaclass=TableMeta):
             sql += " RETURNING version"
             rows = self._execute(sql, values)
             init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
+        # format data
+        exclude = set(self.__class__.model_fields)
+        include = set()
+        formatted_data = {}
+        for name, value in init_data.items():
+            object.__setattr__(self, name, value)
+            include.add(name)
+            if name in exclude:
+                exclude.remove(name)
+            else:
+                formatted_data[name] = value
+        formatted_data |= self.model_dump(include=include,
+                                          exclude=exclude,
+                                          mode="json")
         # perform insertion
-        if init_data:
-            sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(init_data.keys())})\n"
-                f"VALUES ({", ".join("?" for v in init_data.values())})")
+        if formatted_data:
+            sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(formatted_data.keys())})\n"
+                f"VALUES ({", ".join("?" for v in formatted_data.values())})")
         else:
             sql = f"INSERT INTO {self._get_table_name()} DEFAULT VALUES"
         # retrieve automatic columns from inserted row
         self._execute_returning(sql=sql,
-                                parameters=list(init_data.values()),
+                                parameters=list(formatted_data.values()),
                                 for_insertion=True)
         # trigger
         if hasattr(self, "__post_init__"):
@@ -151,17 +187,10 @@ class Table(metaclass=TableMeta):
         if check and not cls.CHECKED_TABLE_EXISTENCE:
             cls._create_table()
             cls.CHECKED_TABLE_EXISTENCE = True
-        # logger.debug(sql)
-        # logger.debug(parameters)
-        print()
-        print(sql)
-        print(tuple(parameters))
         with transaction(connection_name=cls._CONNECTION_NAME) as t:
             cursor = t.execute(sql, parameters)
             result = cursor.fetchall()
             cursor.close()
-        print(result)
-        print()
         return result
     
     def _execute_returning(self, sql: str, parameters: list=[], for_insertion=False):
@@ -172,9 +201,13 @@ class Table(metaclass=TableMeta):
                     returned_fields.add(name)
         if self._READ_ONLY_FIELDS:
             sql += "\nRETURNING " + ", ".join(returned_fields)
-        rows = self._execute(sql, parameters)
+        rows = self._execute(sql, list(parameters))
+
+        # parse returned value & set them
         for name, value in zip(returned_fields, rows[0]):
-            BaseModel.__setattr__(self, name, value)
+            field = self._get_field(name)
+            parsed_value = field.parse(value)
+            object.__setattr__(self, name, parsed_value)
         
     # CREATE TABLE
 
@@ -200,7 +233,7 @@ class Table(metaclass=TableMeta):
         # id & created_at are special
         if issubclass(cls, _WithPrimaryKey):
             statements += ["id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT"]
-        if issubclass(cls, _WithTimestamps):
+        if issubclass(cls, _WithCreatedAtTimestamp):
             statements += ["created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"]
         # other columns are easy
         statements += [

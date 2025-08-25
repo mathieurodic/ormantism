@@ -5,6 +5,9 @@ from pydantic.fields import Field as PydanticField
 from .table import Table
 
 
+JOIN_SEPARATOR = "____"
+
+
 class JoinInfo(PydanticBaseModel):
     model: type
     children: dict[str, "JoinInfo"] = PydanticField(default_factory=dict)
@@ -23,7 +26,7 @@ class JoinInfo(PydanticBaseModel):
             parent_alias = self.model._get_table_name()
             yield f"FROM {parent_alias}"
         for name, child in self.children.items():
-            alias = f"{parent_alias}__{name}"
+            alias = f"{parent_alias}{JOIN_SEPARATOR}{name}"
             yield f"LEFT JOIN {child.model._get_table_name()} AS {alias} ON {alias}.id = {parent_alias}.{name}_id"
             yield from child.get_tables_statements(alias)
     
@@ -31,9 +34,9 @@ class JoinInfo(PydanticBaseModel):
         if not parent_alias:
             parent_alias = self.model._get_table_name()
         for field in self.model._get_fields().values():
-            yield f"{parent_alias}__{field.column_name}", f"{parent_alias}.{field.column_name}"
+            yield f"{parent_alias}{JOIN_SEPARATOR}{field.column_name}", f"{parent_alias}.{field.column_name}"
         for name, child in self.children.items():
-            alias = f"{parent_alias}__{name}"
+            alias = f"{parent_alias}{JOIN_SEPARATOR}{name}"
             yield from child.get_columns(alias)
     
     def get_columns_statements(self):
@@ -46,7 +49,7 @@ class JoinInfo(PydanticBaseModel):
             return defaultdict(infinite_defaultdict)
         data = infinite_defaultdict()
         for (alias, _), value in zip(self.get_columns(), row):
-            path = alias.split("__")[1:]
+            path = alias.split(JOIN_SEPARATOR)[1:]
             item = data
             for p in path[:-1]:
                 item = item[p]

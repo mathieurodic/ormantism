@@ -2,11 +2,11 @@ import urllib
 
 
 _urls: dict[str, str] = {}
-def connect(database_url: str, name: str="default"):
+def connect(database_url: str, name: str=None):
     _urls[name] = database_url
 
 
-def _get_connection(name="default"):
+def _get_connection(name=None):
     try:
         url = _urls[name]
     except KeyError as error:

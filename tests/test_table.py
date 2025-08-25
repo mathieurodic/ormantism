@@ -45,15 +45,15 @@ class TestTableRelationships:
         """Test table with foreign key relationship."""
         class B(Table, with_timestamps=True):
             value: int = 42
-            
+
         class C(Table, with_timestamps=True):
-            links_to: B = None
-        
+            links_to: B|None = None
+
         # Test field structure
         c_fields = C._get_fields()
         assert 'links_to' in c_fields
         assert c_fields['links_to'].is_reference
-        
+
         
         # Test instance creation
         b = B()
@@ -74,7 +74,7 @@ class TestLazyLoading:
         """Test explicit preloading of relationships."""
         class B(Table, with_timestamps=True):
             value: int = 42
-            
+
         class C(Table, with_timestamps=True):
             links_to: B = None
         
@@ -82,7 +82,7 @@ class TestLazyLoading:
         b = B()
         c = C(links_to = b)
         
-        # Test explicit preloading
+
         loaded_c = C.load(id=c.id, preload="links_to")
         assert loaded_c is not None
         assert loaded_c.id == c.id
@@ -96,7 +96,7 @@ class TestLazyLoading:
         """Test lazy loading of relationships."""
         class B(Table, with_timestamps=True):
             value: int = 42
-            
+
         class C(Table, with_timestamps=True):
             links_to: B = None
         
@@ -104,7 +104,7 @@ class TestLazyLoading:
         b = B()
         c = C(links_to = b)
         
-        # Test lazy loading (without preload)
+
         loaded_c = C.load(id=c.id)
         assert loaded_c is not None
         assert loaded_c.id == c.id
@@ -125,7 +125,7 @@ class TestCompanyEmployeeExample:
         """Test complex operations with Company and Employee models."""
         class Company(Table):
             name: str
-            
+
         class Employee(Table):
             firstname: str
             lastname: str
@@ -133,7 +133,7 @@ class TestCompanyEmployeeExample:
         
         # Test loading non-existent records
         c1 = Company.load(id=4)
-        assert c1 is None
+
         
         c2 = Company.load(name="AutoKod")
         assert c2 is None

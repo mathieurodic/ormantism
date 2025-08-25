@@ -1,6 +1,11 @@
+import json
 import threading
+import logging
 from contextlib import contextmanager
 from .connection import _get_connection
+
+
+logger = logging.getLogger(__name__)
 
 
 class TransactionError(Exception):
@@ -74,24 +79,24 @@ class TransactionManager:
         try:
             # Create savepoint for nested transactions
             if savepoint_name:
-                print(f"SAVEPOINT {savepoint_name}")
+                logger.debug(f"SAVEPOINT {savepoint_name}")
                 connection.execute(f"SAVEPOINT {savepoint_name}")
             
             yield transaction_obj
             
             # Commit or release savepoint based on nesting level
             if savepoint_name:
-                print(f"RELEASE SAVEPOINT {savepoint_name}")
+                logger.debug(f"RELEASE SAVEPOINT {savepoint_name}")
                 connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             else:
                 # For top-level transaction, commit
-                print("COMMIT")
+                logger.debug("COMMIT")
                 connection.commit()
             
         except Exception as e:
             # Rollback to savepoint for nested transactions
             if savepoint_name:
-                print(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                logger.debug(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
                 connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
             else:
                 # For top-level transaction, full rollback
@@ -128,6 +133,13 @@ class Transaction:
         if not self._active:
             raise TransactionError("Transaction is no longer active")
         
+        # format parameters
+        for p, parameter in enumerate(parameters):
+            if isinstance(parameter, (dict, list)):
+                parameters[p] = json.dumps(parameter)
+        logger.debug(sql)
+        logger.debug(parameters)
+
         # Check if we're trying to use a higher-level transaction
         current_level = self._manager._get_transaction_level()
         if current_level > self._level:

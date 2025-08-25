@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pydantic import BaseModel, create_model
 from typing import Dict, Type, Any, Optional, List
 
@@ -32,6 +33,21 @@ def get_field_type(field_info: Dict[str, Any]) -> Any:
         return str  # Default type
 
 def rebuild_pydantic_model(schema: Dict[str, Any]) -> Type[BaseModel]:
+
+    # resolve ref (in necessary)
+    schema = deepcopy(schema)
+    ref = schema.pop("$ref", None)
+    if ref:
+        if not ref.startswith("#/"):
+            raise ValueError(f"Invalid $ref: {ref}")
+        path = ref[2:].split("/")
+        cursor = schema
+        if path:
+            for key in path:
+                cursor = cursor[key]
+        schema |= cursor
+
+    # initialize
     fields = {}
     model_name = schema.get("title", "DynamicModel")
     properties = schema.get('properties', {})
