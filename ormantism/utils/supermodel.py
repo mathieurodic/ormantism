@@ -204,7 +204,7 @@ class SuperModel(BaseModel):
             if not method or method in called_methods:
                 continue
             called_methods.append(method)
-            logger.info("Calling trigger %s for %s: %s", event_name, self.__class__.__name__, method)
+            logger.debug("Calling trigger %s for %s: %s", event_name, self.__class__.__name__, method)
             if method:
                 if method(self, *args, **kwargs) is False:
                     break

@@ -84,7 +84,7 @@ class Table(metaclass=TableMeta):
             type: lambda v: {"type": SCALARS[v]},
         },
     )
-    CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
+    _CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
 
     def __eq__(self, other: "Table"):
         if not isinstance(other, self.__class__):
@@ -181,9 +181,9 @@ class Table(metaclass=TableMeta):
     
     @classmethod
     def _execute(cls, sql: str, parameters: list=[], check=True) -> list[tuple]:
-        if check and not cls.CHECKED_TABLE_EXISTENCE:
+        if check and not cls._CHECKED_TABLE_EXISTENCE:
             cls._create_table()
-            cls.CHECKED_TABLE_EXISTENCE = True
+            cls._CHECKED_TABLE_EXISTENCE = True
         with transaction(connection_name=cls._CONNECTION_NAME) as t:
             cursor = t.execute(sql, parameters)
             result = cursor.fetchall()
