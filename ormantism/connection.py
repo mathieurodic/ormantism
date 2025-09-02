@@ -1,9 +1,19 @@
+import logging
+import inspect
 import urllib
+
+
+logger = logging.getLogger(__name__)
 
 
 _urls: dict[str, str] = {}
 def connect(database_url: str, name: str=None):
     _urls[name] = database_url
+    logger.warning("Set database `%s` to `%s`", name, database_url)
+    logger.info("\n".join(f"{frame_info.filename}:{frame_info.lineno}"
+                          for frame_info
+                          in inspect.stack()
+                          if ".venv" not in frame_info.filename))
 
 
 def _get_connection(name=None):
@@ -31,7 +41,9 @@ def _get_connection(name=None):
 
         # For SQLite, the database is usually a file path
         # Establishing the connection
-        connection = sqlite3.connect(parsed_url.path[1:] or parsed_url.hostname)
+        path = parsed_url.path[1:] or parsed_url.hostname
+        logger.critical("Connecting to SQLite database %s", path)
+        connection = sqlite3.connect(path)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 

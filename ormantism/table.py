@@ -1,17 +1,16 @@
 from copy import deepcopy
 from typing import ClassVar
-from contextlib import contextmanager
 import datetime
 import logging
 from functools import cache
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel
 from pydantic._internal._model_construction import ModelMetaclass
 
 from .utils.supermodel import SuperModel
 from .utils.make_hashable import make_hashable
 from .transaction import transaction
-from .field import Field, SCALARS
+from .field import Field, SCALARS, JSON
 
 
 logger = logging.getLogger("ormantism")
@@ -94,15 +93,23 @@ class Table(metaclass=TableMeta):
     def __hash__(self):
         return hash(make_hashable(self))
 
+    def __deepcopy__(self, memo):
+        return self
+
     # INSERT or SELECT
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
-        if _search_fields:
-            loaded = cls.load(**{key: data[key] for key in _search_fields})
+        # if restriction applies
+        if _search_fields is None:
+            searched_data = data
         else:
-            loaded = cls.load(**data)
+            searched_data = {key: data[key] for key in _search_fields if key in data}
+        # return corresponding row if already exists
+        loaded = cls.load(**searched_data)
         if loaded:
+            loaded.update(**data)
             return loaded
+        # build new item if not found
         return cls(**data)
 
     # INSERT
@@ -166,7 +173,13 @@ class Table(metaclass=TableMeta):
     @classmethod
     @cache
     def _get_field(cls, name: str):
-        return cls._get_fields()[name]
+        fields = cls._get_fields()
+        if name in fields:
+            return fields[name]
+        for field in fields.values():
+            if field.column_name == name:
+                return field
+        raise KeyError(f"No such field for {cls.__name__}: {name}")
 
     @classmethod
     @cache
@@ -183,6 +196,7 @@ class Table(metaclass=TableMeta):
     def _execute(cls, sql: str, parameters: list=[], check=True) -> list[tuple]:
         if check and not cls._CHECKED_TABLE_EXISTENCE:
             cls._create_table()
+            cls._add_columns()
             cls._CHECKED_TABLE_EXISTENCE = True
         with transaction(connection_name=cls._CONNECTION_NAME) as t:
             cursor = t.execute(sql, parameters)
@@ -215,16 +229,6 @@ class Table(metaclass=TableMeta):
         for field in cls._get_fields().values():
             if field.is_reference and field.base_type not in created:
                 field.base_type._create_table(created)
-        # translation from Python to SQL type
-        translate_type = {
-            int: "INTEGER NOT NULL",
-            int|None: "INTEGER",
-            str: "TEXT NOT NULL",
-            str|None: "TEXT",
-            datetime.datetime: "TIMESTAMP NOT NULL",
-            datetime.datetime|None: "TIMESTAMP",
-            list[str]: "JSON NOT NULL",
-        }
         # initialize statements for table creation
         statements = []
         # id & created_at are special
@@ -248,6 +252,17 @@ class Table(metaclass=TableMeta):
         sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
         cls._execute(sql, check=False)
 
+    @classmethod
+    def _add_columns(cls):
+        rows = cls._execute(f"SELECT name FROM pragma_table_info('{cls._get_table_name()}')", check=False)
+        columns_names = {name for name, in rows}
+        new_fields = [field for field in cls._get_fields().values()
+                      if field.column_name not in columns_names]
+        for field in new_fields:
+            cls._execute(f"ALTER TABLE {cls._get_table_name()} ADD COLUMN {field.sql_declaration}", check=False)
+            if field.is_reference:
+                raise Exception("cannot add foreign key constraint on existing table")
+
     def check_read_only(self, data):
         """Check we are not attempting to alter read-only fields"""
         read_only_fields = list(set(data) & set(self._READ_ONLY_FIELDS))
@@ -269,7 +284,7 @@ class Table(metaclass=TableMeta):
             if field.is_reference:
                 # references are special
                 referred = data.pop(name)
-                data[field.column_name] = referred.id if referred else None
+                data[field.column_name] = (referred if isinstance(referred, int) else referred.id) if referred else None
             else:
                 value = data[name]
                 if isinstance(value, BaseModel):
@@ -289,11 +304,16 @@ class Table(metaclass=TableMeta):
         else:
             raise NotImplementedError()
         
+        # compute parameters
+        parameters = tuple(self._get_field(name).serialize(value)
+                           for statement in (set_statement, where_statement)
+                           for name, value in statement.items())
+
         # execute query
         self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
                                     f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
                                     f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
-                                parameters=tuple(set_statement.values()) + tuple(where_statement.values()),)
+                                parameters=parameters)
 
     # DELETE
     def delete(self):
@@ -305,6 +325,8 @@ class Table(metaclass=TableMeta):
     # SELECT
     @classmethod
     def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
+        criteria = {name: cls._get_field(name).serialize(value)
+                    for name, value in criteria.items()}
         if not preload:
             preload = []
         if isinstance(preload, str):
@@ -332,6 +354,8 @@ class Table(metaclass=TableMeta):
                 sql += f"\nAND {cls._get_table_name()}.{name}"
                 if value is None:
                     sql += " IS NULL"
+                elif cls._get_field(name).column_base_type == JSON:
+                    sql += " = JSON(?)"
                 else:
                     sql += " = ?"
                     values.append(value)

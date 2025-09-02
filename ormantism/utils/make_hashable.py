@@ -1,9 +1,13 @@
 import inspect
 import typing
+import enum
 from pydantic import BaseModel
 
 
 def make_hashable(thing: any):
+    # enums
+    if isinstance(thing, enum.Enum):
+        return (thing.name, thing.value)
     # pre-transform Pydantic model instances
     if isinstance(thing, BaseModel):
         thing = thing.model_dump()

@@ -1,8 +1,12 @@
 import logging
+import types
 from copy import copy
-from pydantic import BaseModel, create_model, TypeAdapter
 from types import GenericAlias
+
+from pydantic import BaseModel, create_model, TypeAdapter
+
 from .is_type_annotation import is_type_annotation
+from .get_base_type import get_base_type
 
 
 logger = logging.getLogger(__name__)
@@ -27,15 +31,15 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
     if root_schema is None:
         root_schema = schema
 
-    # resolve ref (in necessary)
+    # resolve ref (if necessary)
     ref = schema.pop("$ref", None)
     if ref:
         if not ref.startswith("#/"):
             raise ValueError(f"Invalid $ref: {ref}")
-        path = ref[2:].split("/")
+        path = ref[2:]
         cursor = root_schema
         if path:
-            for key in path:
+            for key in path.split("/"):
                 cursor = cursor[key]
         schema |= cursor
 
@@ -87,29 +91,48 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
 
 class SuperModel(BaseModel):
 
+    def __init_subclass__(cls, **kwargs):
+        # Transform type annotations before the class is fully created
+        if hasattr(cls, '__annotations__'):
+            new_annotations = {}
+            for field_name, annotation in cls.__annotations__.items():
+                # If the annotation is exactly 'type', replace it with Union
+                if annotation is type:
+                    new_annotations[field_name] = type | types.GenericAlias
+                else:
+                    new_annotations[field_name] = annotation
+            cls.__annotations__ = new_annotations
+        
+        # Call parent's __init_subclass__
+        super().__init_subclass__(**kwargs)
+
     # instanciation
 
     def __init__(self, /, **data: any) -> None:
         # for triggers
         init_data = copy(data)
         self.trigger("before_create", data)
-        # process type attributes
+        # process type attributes separately
         type_data = {}
-        for key, value in data.items():
-            field_info = self.__class__.model_fields.get(key)
-            if is_type_annotation(value):
+        for name, value in data.items():
+            field_info = self.__class__.model_fields.get(name)
+            base_type, is_optional = get_base_type(field_info.annotation)
+            if base_type == type:
                 if isinstance(value, dict):
+                    raise Exception(value)
                     value = from_json_schema(value)
                 if isinstance(value, type):
-                    data[key] = value
+                    data[name] = value
                 elif isinstance(value, GenericAlias):
-                    type_data[key] = value
-                    data[key] = type(None)
+                    type_data[name] = value
+                    data[name] = type(None)
                 else:
                     raise ValueError(f"Not a type: {value}")
+        # validate non-types with BaseModel
         BaseModel.__init__(self, **data)
-        for key, value in type_data.items():
-            object.__setattr__(self, key, value)
+        # set type attributes without BaseModel check
+        for name, value in type_data.items():
+            object.__setattr__(self, name, value)
         # trigger
         self.trigger("after_create", init_data)
     
@@ -143,8 +166,8 @@ class SuperModel(BaseModel):
                 if is_type_annotation(value):
                     include.remove(key)
                     exclude.add(key)
-                    adapter = TypeAdapter(field_info.annotation)
-                    adapter.validate_python(value)
+                    # adapter = TypeAdapter(field_info.annotation)
+                    # adapter.validate_python(value)
                     try:
                         result[key] = to_json_schema(value)
                     except Exception as e:

@@ -1,5 +1,5 @@
 from typing import Type, Union, get_origin, get_args, List, Dict, Any
-from types import UnionType
+from types import UnionType, GenericAlias
 
 def get_base_type(complex_type: Type) -> tuple[Type, bool]:
     """
@@ -25,13 +25,16 @@ def get_base_type(complex_type: Type) -> tuple[Type, bool]:
     Raises:
         TypeError: If the complex type is a union that does not exclusively involve a single type and None.
     """
+
     origin = get_origin(complex_type)
     args = get_args(complex_type)
 
     # Check if it's a union type, including the new | syntax
     if origin is Union or origin is UnionType:
+        if complex_type in (type | GenericAlias, type | GenericAlias | None):
+            return type, None in args
         if type(None) not in args:
-            raise TypeError("Complex type must be a union with None only.")
+            raise TypeError(f"Complex type must be a union with None only. This is {complex_type}")
         # Filter out None type
         base_type = next(arg for arg in args if arg is not type(None))
         return (get_container_base_type(base_type), False)
