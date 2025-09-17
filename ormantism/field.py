@@ -68,7 +68,16 @@ class Field:
 
     @property
     @cache
-    def sql_declaration(self):
+    def sql_creations(self) -> list[str]:
+        # only case where we face a multi-column field
+        from .table import Table
+        if self.base_type == Table:
+            sql_null = " NOT NULL" if self.column_is_required else ""
+            return [
+                f"{self.name}_table TEXT{sql_null}",
+                f"{self.name}_id INTEGER{sql_null}",
+            ]
+        # otherwise, only one column to create
         translate_type = {
             bool: "BOOLEAN",
             int: "INTEGER",
@@ -102,7 +111,7 @@ class Field:
                     serialized = json.dumps(serialized, ensure_ascii=False)
                 serialized = "'" + serialized.replace("'", "''") + "'"
             sql += f" DEFAULT {serialized}"
-        return sql
+        return [sql]
 
     def __hash__(self):
         return hash(make_hashable(tuple(asdict(self).items())))

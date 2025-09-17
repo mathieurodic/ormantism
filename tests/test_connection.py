@@ -1,8 +1,20 @@
+import os
 from ormantism.connection import _get_connection
+from ormantism.connection import connect
 
 
-def test_file_connection(setup_db):
-    setup_db(None, "alternative")
+def _setup(*names: tuple[str]):
+    for name in names:
+        os.makedirs("/tmp/ormantism-tests", exist_ok=True)
+        path = f"/tmp/ormantism-tests/test-{name}.sqlite3"
+        try:
+            os.remove(path)
+        except FileNotFoundError:pass
+        connect(f"sqlite:///{path}", name=name)
+
+
+def test_file_connection():
+    _setup(None, "alternative")
     print("\nTEST wrong name:")
     try:
         cn = _get_connection(name="nonexistent")

@@ -3,6 +3,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from pydantic.fields import Field as PydanticField
 
 from .table import Table
+from .utils.get_table_by_name import get_table_by_name
 
 
 JOIN_SEPARATOR = "____"
@@ -17,6 +18,8 @@ class JoinInfo(PydanticBaseModel):
         field = self.model._get_field(name)
         if not field.is_reference:
             raise ValueError(f"Field `{name}` is not a reference (in path `{path}`)")
+        if field.base_type == Table:
+            raise ValueError(f"Generic reference cannot be preloaded: {".".join(path)}")
         child = self.children[field.name] = JoinInfo(model=field.base_type)
         if len(path) > 1:
             child.add_children(path[1:])
@@ -34,6 +37,8 @@ class JoinInfo(PydanticBaseModel):
         if not parent_alias:
             parent_alias = self.model._get_table_name()
         for field in self.model._get_fields().values():
+            if field.base_type == Table:
+                yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_table", f"{parent_alias}.{field.name}_table"
             yield f"{parent_alias}{JOIN_SEPARATOR}{field.column_name}", f"{parent_alias}.{field.column_name}"
         for name, child in self.children.items():
             alias = f"{parent_alias}{JOIN_SEPARATOR}{name}"
@@ -57,7 +62,7 @@ class JoinInfo(PydanticBaseModel):
         return data
     
     def get_instance(self, row: tuple) -> Table:
-        _lazy_identifiers = {}
+        _lazy_joins = {}
         def _get_instance_recursive(data: dict, info: JoinInfo):
             for name, field in info.model._get_fields().items():
                 if field.is_reference:
@@ -68,14 +73,18 @@ class JoinInfo(PydanticBaseModel):
                         data[name] = _get_instance_recursive(data[name], info.children[name])
                     else:
                         data.pop(name, None)
-                        _lazy_identifiers[name] = reference_id
+                        if field.base_type == Table:
+                            reference_table = data.pop(name + "_table")
+                            _lazy_joins[name] = (get_table_by_name(reference_table), reference_id)
+                        else:
+                            _lazy_joins[name] = (field.base_type, reference_id)
                 else:
                     data[name] = field.parse(data[name])
             info.model._ensure_lazy_loaders()
             info.model._suspend_validation()
             instance = info.model(**data)
             instance.__dict__.update(data)
-            instance._lazy_identifiers = _lazy_identifiers
+            instance._lazy_joins = _lazy_joins
             info.model._resume_validation()
             return instance
         return _get_instance_recursive(self.get_data(row), self)

@@ -91,22 +91,6 @@ class Table(metaclass=TableMeta):
     def __deepcopy__(self, memo):
         return self
 
-    # INSERT or SELECT
-    @classmethod
-    def load_or_create(cls, _search_fields=None, **data):
-        # if restriction applies
-        if _search_fields is None:
-            searched_data = data
-        else:
-            searched_data = {key: data[key] for key in _search_fields if key in data}
-        # return corresponding row if already exists
-        loaded = cls.load(**searched_data)
-        if loaded:
-            loaded.update(**data)
-            return loaded
-        # build new item if not found
-        return cls(**data)
-
     # INSERT
     def on_after_create(self, init_data: dict):
         # if primary key already set: skip entirely
@@ -157,6 +141,27 @@ class Table(metaclass=TableMeta):
         if hasattr(self, "__post_init__"):
             self.__post_init__()
 
+    # INSERT or SELECT
+    @classmethod
+    def load_or_create(cls, _search_fields=None, **data):
+        # if restriction applies
+        if _search_fields is None:
+            searched_data = data
+        else:
+            searched_data = {key: data[key] for key in _search_fields if key in data}
+        # return corresponding row if already exists
+        loaded = cls.load(**searched_data)
+        if loaded:
+            loaded.update(**data)
+            return loaded
+        # build new item if not found
+        return cls(**data)
+
+    @classmethod
+    @cache
+    def _has_field(cls, name: str) -> bool:
+        return name in cls.model_fields
+
     @classmethod
     @cache
     def _get_fields(cls) -> dict[str, Field]:
@@ -189,7 +194,7 @@ class Table(metaclass=TableMeta):
     
     @classmethod
     def _execute(cls, sql: str, parameters: list=[], check=True) -> list[tuple]:
-        if check and not cls._CHECKED_TABLE_EXISTENCE:
+        if check and cls != Table and not cls._CHECKED_TABLE_EXISTENCE:
             cls._create_table()
             cls._add_columns()
             cls._CHECKED_TABLE_EXISTENCE = True
@@ -222,7 +227,7 @@ class Table(metaclass=TableMeta):
         # create tables for references first
         created.add(cls)
         for field in cls._get_fields().values():
-            if field.is_reference and field.base_type not in created:
+            if field.is_reference and field.base_type != Table and field.base_type not in created:
                 field.base_type._create_table(created)
         # initialize statements for table creation
         statements = []
@@ -232,16 +237,17 @@ class Table(metaclass=TableMeta):
         if issubclass(cls, _WithCreatedAtTimestamp):
             statements += ["created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"]
         # other columns are easy
-        statements += [
-            field.sql_declaration
+        statements += sum((
+            field.sql_creations
             for field in cls._get_fields().values()
             if field.name not in ("created_at", "id")
-        ]
+        ), start=[])
         # foreign keys
         statements += [
             f"FOREIGN KEY ({name}_id) REFERENCES {field.base_type._get_table_name()}(id)"
             for name, field in cls._get_fields().items()
             if field.is_reference
+            and field.base_type != Table
         ]
         # build & execute SQL
         sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} (\n  {",\n  ".join(statements)})"
@@ -254,9 +260,10 @@ class Table(metaclass=TableMeta):
         new_fields = [field for field in cls._get_fields().values()
                       if field.column_name not in columns_names]
         for field in new_fields:
-            cls._execute(f"ALTER TABLE {cls._get_table_name()} ADD COLUMN {field.sql_declaration}", check=False)
-            if field.is_reference:
-                raise Exception("cannot add foreign key constraint on existing table")
+            for sql_creation in field.sql_creations:
+                cls._execute(f"ALTER TABLE {cls._get_table_name()} ADD COLUMN {sql_creation}", check=False)
+                if field.is_reference:
+                    raise Exception("cannot add foreign key constraint on existing table")
 
     def check_read_only(self, data):
         """Check we are not attempting to alter read-only fields"""
@@ -278,8 +285,10 @@ class Table(metaclass=TableMeta):
             # so, there is.
             if field.is_reference:
                 # references are special
-                referred = data.pop(name)
-                data[field.column_name] = (referred if isinstance(referred, int) else referred.id) if referred else None
+                referred: Table = data.pop(name)
+                if field.base_type == Table:
+                    data[f"{field.name}_table"] = referred._get_table_name() if referred else None
+                data[f"{field.name}_id"] = (referred if isinstance(referred, int) else referred.id) if referred else None
             else:
                 value = data[name]
                 if isinstance(value, BaseModel):
@@ -300,7 +309,9 @@ class Table(metaclass=TableMeta):
             raise NotImplementedError()
         
         # compute parameters
-        parameters = tuple(self._get_field(name).serialize(value)
+        logger.critical(set_statement)
+        logger.critical(where_statement)
+        parameters = tuple(self._get_field(name).serialize(value) if self._has_field(name) else value
                            for statement in (set_statement, where_statement)
                            for name, value in statement.items())
 
@@ -320,8 +331,9 @@ class Table(metaclass=TableMeta):
     # SELECT
     @classmethod
     def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
-        criteria = {name: cls._get_field(name).serialize(value)
-                    for name, value in criteria.items()}
+        criteria = cls.process_data(criteria)
+        # criteria = {name: cls._get_field(name).serialize(value)
+        #             for name, value in criteria.items()}
         if not preload:
             preload = []
         if isinstance(preload, str):
@@ -345,11 +357,12 @@ class Table(metaclass=TableMeta):
         if issubclass(cls, _WithTimestamps) and not with_deleted:
             criteria = dict(deleted_at=None, **criteria)
         if criteria:
-            for name, value in cls.process_data(criteria).items():
+            # for name, value in cls.process_data(criteria).items():
+            for name, value in criteria.items():
                 sql += f"\nAND {cls._get_table_name()}.{name}"
                 if value is None:
                     sql += " IS NULL"
-                elif cls._get_field(name).column_base_type == JSON:
+                elif cls._has_field(name) and cls._get_field(name).column_base_type == JSON:
                     sql += " = JSON(?)"
                 else:
                     sql += " = ?"
@@ -415,10 +428,10 @@ class Table(metaclass=TableMeta):
             delattr(cls, "__setattr_backup__")
 
     @classmethod
-    def _add_lazy_loader(cls, name: str, model: type["Table"]):
+    def _add_lazy_loader(cls, name: str):
         def lazy_loader(self):
             if not name in self.__dict__:
-                identifier = self._lazy_identifiers.get(name)
+                model, identifier = self._lazy_joins[name]
                 value = None if identifier is None else model.load(id=identifier)
                 self.__dict__[name] = value
             return self.__dict__[name]
@@ -430,5 +443,5 @@ class Table(metaclass=TableMeta):
             return
         for name, field in cls._get_fields().items():
             if field.is_reference:
-                cls._add_lazy_loader(name, field.base_type)
+                cls._add_lazy_loader(name)
         cls._has_lazy_loaders = True

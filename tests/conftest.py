@@ -4,15 +4,14 @@ from ormantism.connection import connect
 
 
 @pytest.fixture(scope="function")
-def setup_db():
-    """Setup an in-memory SQLite database for each test."""
-    connect("sqlite:///:memory:")
-    def method(*names: tuple[str]):
-        for name in names:
-            os.makedirs("/tmp/ormantism-tests", exist_ok=True)
-            path = f"/tmp/ormantism-tests/test-{name}.sqlite3"
-            try:
-                os.remove(path)
-            except FileNotFoundError:pass
-            connect(f"sqlite:///{path}", name=name)
-    yield method
+def setup_db(request):
+    """Setup a temporary file SQLite database for each test."""
+    path = f"/tmp/ormantism-tests/test-{request.function.__module__}-{request.function.__name__}.sqlite3"
+    import logging
+    logging.critical(path)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    connect(f"sqlite:///{path}")
+    yield
