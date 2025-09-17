@@ -13,18 +13,10 @@ from pydantic.fields import FieldInfo as PydanticFieldInfo
 from pydantic_core import PydanticUndefined
 
 from .utils.get_base_type import get_base_type
+from .utils.resolve_type import resolve_type
 from .utils.rebuild_pydantic_model import rebuild_pydantic_model
 from .utils.make_hashable import make_hashable
 from .utils.supermodel import to_json_schema, from_json_schema
-
-
-# Which values are considered scalar
-SCALARS = {
-    bool: {"type": "boolean"},
-    str: {"type": "string"},
-    int: {"type": "integer"},
-    float: {"type": "number"},
-}
 
 
 # Define some custom types
@@ -60,7 +52,8 @@ class Field:
     @classmethod
     def from_pydantic_info(cls, table: "Table", name: str, info: PydanticFieldInfo):
         from .table import Table
-        base_type, column_is_required = get_base_type(info.annotation)
+        resolved_type = resolve_type(info.annotation)
+        base_type, column_is_required = get_base_type(resolved_type)
         default = None if info.default == PydanticUndefined else info.default
         if info.default_factory:
             default = info.default_factory()
@@ -83,6 +76,7 @@ class Field:
             str: "TEXT",
             datetime.datetime: "TIMESTAMP",
             list: "JSON",
+            set: "JSON",
             dict: "JSON",
             type[BaseModel]: "JSON",
             type: "JSON",
@@ -124,6 +118,8 @@ class Field:
             return value
         if isinstance(value, (list, dict)):
             return json.dumps(value, ensure_ascii=False)
+        if self.base_type in (set, tuple):
+            return json.dumps(list(value))
         if isinstance(value, enum.Enum):
             return value.name
         if self.is_reference:
@@ -140,12 +136,16 @@ class Field:
         if issubclass(self.base_type, enum.Enum):
             return self.base_type[value]
         if self.base_type == JSON:
+            if not isinstance(value, str):
+                return value
             try:
                 return json.loads(value)
             except json.JSONDecodeError:
                 return value
         if self.base_type in (dict, list):
             return json.loads(value)
+        if self.base_type in (set, tuple):
+            return self.base_type(json.loads(value))
         if issubclass(self.base_type, BaseModel):
             return self.base_type(**json.loads(value))
         if self.base_type in (int, float, str, bool):

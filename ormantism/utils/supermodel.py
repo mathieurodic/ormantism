@@ -116,6 +116,9 @@ class SuperModel(BaseModel):
         type_data = {}
         for name, value in data.items():
             field_info = self.__class__.model_fields.get(name)
+            if not field_info:
+                raise NameError(f"{self.__class__.__name__} has no field for name: {name}")
+                # logger.warning(f"No field for name: {name}")
             base_type, is_optional = get_base_type(field_info.annotation)
             if base_type == type:
                 if isinstance(value, dict):

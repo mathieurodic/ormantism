@@ -1,5 +1,5 @@
-from ormantism.table import Table, Field
 from typing import Optional
+from ormantism.table import Table, Field
 from pydantic import Field as PydanticField
 
 

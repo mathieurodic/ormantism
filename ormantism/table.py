@@ -10,7 +10,7 @@ from pydantic._internal._model_construction import ModelMetaclass
 from .utils.supermodel import SuperModel
 from .utils.make_hashable import make_hashable
 from .transaction import transaction
-from .field import Field, SCALARS, JSON
+from .field import Field, JSON
 
 
 logger = logging.getLogger("ormantism")
@@ -56,7 +56,6 @@ class TableMeta(ModelMetaclass):
         # connection name
         if not connection_name:
             for base in bases:
-                print(base, base._CONNECTION_NAME)
                 if base._CONNECTION_NAME:
                     connection_name = base._CONNECTION_NAME
         result._CONNECTION_NAME = connection_name
@@ -78,10 +77,6 @@ class Table(metaclass=TableMeta):
 
     model_config = dict(
         arbitrary_types_allowed = True,
-        json_encoders = {
-            type[SuperModel]: lambda v: v.model_json_schema(),
-            type: lambda v: {"type": SCALARS[v]},
-        },
     )
     _CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
 

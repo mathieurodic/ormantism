@@ -22,6 +22,10 @@ def _get_connection(name=None):
     except KeyError as error:
         raise ValueError(f"No connection configured with name=`{name}`") from error
 
+    if not isinstance(url, str):
+        if callable(url):
+            url = url()
+
     parsed_url = urllib.parse.urlparse(url)
     if parsed_url.scheme == "mysql":
         import pymysql

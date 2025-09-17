@@ -27,6 +27,9 @@ def make_hashable(thing: any):
     # classes
     if inspect.isclass(thing) or isinstance(thing, type) or typing.get_origin(thing):
         return thing
+    # forward refs
+    if isinstance(thing, typing.ForwardRef):
+        return thing.__forward_arg__
     # other
     raise ValueError(f"Cannot hash `{thing}`")
 
