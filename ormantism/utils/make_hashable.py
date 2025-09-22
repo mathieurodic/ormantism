@@ -30,8 +30,11 @@ def make_hashable(thing: any):
     # forward refs
     if isinstance(thing, typing.ForwardRef):
         return thing.__forward_arg__
+    # forward refs
+    if typing.get_origin(thing) == typing.Union:
+        return thing.__args__
     # other
-    raise ValueError(f"Cannot hash `{thing}`")
+    raise ValueError(f"Cannot hash `{thing}`, {type(thing)}, {typing.get_origin(thing)}")
 
 if __name__ == "__main__":
     from pydantic import Field

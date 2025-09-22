@@ -4,7 +4,7 @@ import types
 import json
 import inspect
 import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Iterable
 from functools import cache
 from dataclasses import dataclass, asdict
 
@@ -26,14 +26,24 @@ JSON = Any
 
 @dataclass
 class Field:
-    table: "Table"
+    table: type["Table"]
     name: str
     base_type: type
+    secondary_type: Optional[type]
     full_type: type
     default: any
     is_required: bool
     column_is_required: bool
     is_reference: bool
+
+    @property
+    @cache
+    def reference_type(self) -> type:
+        if not self.is_reference:
+            return None
+        if self.secondary_type is None:
+            return self.base_type
+        return self.secondary_type
 
     @property
     @cache
@@ -50,33 +60,60 @@ class Field:
         return self.base_type
 
     @classmethod
-    def from_pydantic_info(cls, table: "Table", name: str, info: PydanticFieldInfo):
+    def from_pydantic_info(cls, table: type["Table"], name: str, info: PydanticFieldInfo):
         from .table import Table
         resolved_type = resolve_type(info.annotation)
-        base_type, column_is_required = get_base_type(resolved_type)
+        base_type, secondary_types, column_is_required = get_base_type(resolved_type)
+        secondary_types = [secondary_type for secondary_type in secondary_types if secondary_type != type(None)]
+        if len(secondary_types) > 1:
+            raise ValueError(f"{table.__name__}.{name}: {secondary_types=}")
+        secondary_type = secondary_types[0] if secondary_types else None
         default = None if info.default == PydanticUndefined else info.default
         if info.default_factory:
             default = info.default_factory()
         return cls(table=table,
                    name=name,
                    base_type=base_type,
+                   secondary_type=secondary_type,
                    full_type=info.annotation,
                    default=default,
                    column_is_required=column_is_required,
                    is_required=column_is_required and info.is_required(),
-                   is_reference=issubclass(base_type, Table))
+                   is_reference=issubclass(base_type, Table) or issubclass(secondary_type, Table))
 
     @property
     @cache
-    def sql_creations(self) -> list[str]:
-        # only case where we face a multi-column field
-        from .table import Table
-        if self.base_type == Table:
-            sql_null = " NOT NULL" if self.column_is_required else ""
-            return [
-                f"{self.name}_table TEXT{sql_null}",
-                f"{self.name}_id INTEGER{sql_null}",
-            ]
+    def sql_creations(self) -> Iterable[str]:
+
+        # null, default
+        sql_null = " NOT NULL" if self.column_is_required else ""
+        if self.default is not None:
+            serialized = self.serialize(self.default)
+            if isinstance(serialized, (int, float)):
+                serialized = str(serialized)
+            else:
+                if not isinstance(serialized, str):
+                    serialized = json.dumps(serialized, ensure_ascii=False)
+                serialized = "'" + serialized.replace("'", "''") + "'"
+            sql_default = f" DEFAULT {serialized}"
+        else:
+            sql_default = ""
+
+        # references
+        if self.is_reference:
+            from .table import Table
+            # scalar reference
+            if self.secondary_type is None:
+                if self.base_type == Table:
+                    yield f"{self.name}_table TEXT{sql_null}{sql_default}"
+                yield f"{self.name}_id INTEGER{sql_null}{sql_default}"
+            # list of references
+            elif issubclass(self.base_type, (list, tuple, set)):
+                if self.secondary_type == Table:
+                    yield f"{self.name}_tables JSON{sql_null}{sql_default}"
+                yield f"{self.name}_ids JSON{sql_null}{sql_default}"
+            return
+
         # otherwise, only one column to create
         translate_type = {
             bool: "BOOLEAN",
@@ -100,18 +137,10 @@ class Field:
             sql = f"{self.column_name} {translate_type[self.column_base_type]}"
         else:
             raise TypeError(f"Type `{self.column_base_type}` of `{self.table.__name__}.{self.column_name}` has no known conversion to SQL type")
-        if self.column_is_required:
-            sql += " NOT NULL"
-        if self.default is not None:
-            serialized = self.serialize(self.default)
-            if isinstance(serialized, (int, float)):
-                serialized = str(serialized)
-            else:
-                if not isinstance(serialized, str):
-                    serialized = json.dumps(serialized, ensure_ascii=False)
-                serialized = "'" + serialized.replace("'", "''") + "'"
-            sql += f" DEFAULT {serialized}"
-        return [sql]
+
+        # final result
+        yield sql + sql_null + sql_default
+
 
     def __hash__(self):
         return hash(make_hashable(tuple(asdict(self).items())))

@@ -1,7 +1,8 @@
-from typing import Type, Union, get_origin, get_args, List, Dict, Any
+from typing import Union, get_origin, get_args
 from types import UnionType, GenericAlias
 
-def get_base_type(complex_type: Type) -> tuple[Type, bool]:
+
+def get_base_type(complex_type: type) -> tuple[type, tuple, bool]:
     """
     Extracts the base type from a given complex type and determines if it is optional.
 
@@ -11,11 +12,11 @@ def get_base_type(complex_type: Type) -> tuple[Type, bool]:
     indicating whether the type is optional (i.e., can be None).
 
     Args:
-        complex_type (Type): The complex type to be analyzed. This can be a simple type, a container type,
+        complex_type (type): The complex type to be analyzed. This can be a simple type, a container type,
                             or a union type with None.
 
     Returns:
-        tuple[Type, bool]: A tuple containing the base type and a boolean indicating if the type is optional.
+        tuple[type, bool]: A tuple containing the base type and a boolean indicating if the type is optional.
                           For example:
                           - For `Something`, it returns `(Something, True)`.
                           - For `Something | None`, it returns `(Something, False)`.
@@ -32,16 +33,17 @@ def get_base_type(complex_type: Type) -> tuple[Type, bool]:
     # Check if it's a union type, including the new | syntax
     if origin is Union or origin is UnionType:
         if complex_type in (type | GenericAlias, type | GenericAlias | None):
-            return type, None in args
+            return type, (), None in args
         if type(None) not in args:
             raise TypeError(f"Complex type must be a union with None only. This is {complex_type}")
         # Filter out None type
         base_type = next(arg for arg in args if arg is not type(None))
-        return (get_container_base_type(base_type), False)
+        return (get_container_base_type(base_type), get_args(base_type), False)
     else:
-        return (get_container_base_type(complex_type), True)
+        return (get_container_base_type(complex_type), get_args(complex_type), True)
 
-def get_container_base_type(type_: Type) -> Type:
+
+def get_container_base_type(type_: type) -> type:
     """
     Extracts the base container type from a given type.
 
@@ -50,10 +52,10 @@ def get_container_base_type(type_: Type) -> Type:
     If the input type is not a container type, it returns the type as-is.
 
     Args:
-        type_ (Type): The type to be analyzed. This can be a simple type or a container type.
+        type_ (type): The type to be analyzed. This can be a simple type or a container type.
 
     Returns:
-        Type: The base container type if the input is a container type; otherwise, the input type itself.
+        type: The base container type if the input is a container type; otherwise, the input type itself.
              For example:
              - For `list[str]`, it returns `list`.
              - For `dict[str, list[int]]`, it returns `dict`.

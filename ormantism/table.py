@@ -1,5 +1,6 @@
 from copy import deepcopy
 from typing import ClassVar
+import json
 import datetime
 import logging
 from functools import cache
@@ -141,7 +142,33 @@ class Table(metaclass=TableMeta):
         if hasattr(self, "__post_init__"):
             self.__post_init__()
 
-    # INSERT or SELECT
+    # UPDATE
+
+    def on_before_update(self, new_data):
+        """Apply changes to database"""
+        # ensure we're not trying to write read-only fields
+        self.check_read_only(new_data)
+        # fill SET statement
+        set_statement = self.process_data(new_data)
+        # fill WHERE statement
+        where_statement = {}
+        if isinstance(self, _WithPrimaryKey):
+            where_statement = {"id": self.id}
+        else:
+            raise NotImplementedError()
+
+        # compute parameters
+        parameters = tuple(self._get_field(name).serialize(value) if self._has_field(name) else value
+                           for statement in (set_statement, where_statement)
+                           for name, value in statement.items())
+
+        # execute query
+        self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
+                                    f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
+                                    f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
+                                parameters=parameters)
+
+    # INSERT or SELECT / UPDATE
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
         # if restriction applies
@@ -156,6 +183,8 @@ class Table(metaclass=TableMeta):
             return loaded
         # build new item if not found
         return cls(**data)
+
+    ##
 
     @classmethod
     @cache
@@ -227,8 +256,10 @@ class Table(metaclass=TableMeta):
         # create tables for references first
         created.add(cls)
         for field in cls._get_fields().values():
-            if field.is_reference and field.base_type != Table and field.base_type not in created:
-                field.base_type._create_table(created)
+            if field.is_reference:
+                for t in (field.base_type, field.secondary_type):
+                    if issubclass(t, Table) and t != Table and t not in created:
+                        t._create_table(created)
         # initialize statements for table creation
         statements = []
         # id & created_at are special
@@ -238,7 +269,7 @@ class Table(metaclass=TableMeta):
             statements += ["created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"]
         # other columns are easy
         statements += sum((
-            field.sql_creations
+            list(field.sql_creations)
             for field in cls._get_fields().values()
             if field.name not in ("created_at", "id")
         ), start=[])
@@ -246,7 +277,7 @@ class Table(metaclass=TableMeta):
         statements += [
             f"FOREIGN KEY ({name}_id) REFERENCES {field.base_type._get_table_name()}(id)"
             for name, field in cls._get_fields().items()
-            if field.is_reference
+            if field.is_reference and field.secondary_type is None
             and field.base_type != Table
         ]
         # build & execute SQL
@@ -281,45 +312,29 @@ class Table(metaclass=TableMeta):
             try:
                 field = cls._get_field(name)
             except KeyError:
-                continue
+                logger.warning(f"Invalid key for {cls.__name__}: {name}")
             # so, there is.
             if field.is_reference:
-                # references are special
-                referred: Table = data.pop(name)
-                if field.base_type == Table:
-                    data[f"{field.name}_table"] = referred._get_table_name() if referred else None
-                data[f"{field.name}_id"] = (referred if isinstance(referred, int) else referred.id) if referred else None
+                value = data.pop(name)
+                # scalar reference
+                if field.secondary_type is None:
+                    if field.base_type == Table:
+                        data[f"{field.name}_table"] = value._get_table_name() if value else None
+                    data[f"{field.name}_id"] = (value if isinstance(value, int) else value.id) if value else None
+                # list of references
+                elif isinstance(value, (list, tuple, set)) and issubclass(field.base_type, (list, tuple, set)):
+                    if field.secondary_type == Table:
+                        data[f"{field.name}_tables"] = [referred._get_table_name() for referred in value]
+                    data[f"{field.name}_ids"] = [referred.id for referred in value]
+                # ?
+                else:
+                    raise NotImplementedError(field.name, value, field.base_type, field.secondary_type)
             else:
+                # not a reference, just some regular stuff
                 value = data[name]
                 if isinstance(value, BaseModel):
                     data[name] = value.model_dump(mode="json")
         return data
-
-    def on_before_update(self, new_data):
-        """Apply changes to database"""
-        # ensure we're not trying to write read-only fields
-        self.check_read_only(new_data)
-        # fill SET statement
-        set_statement = self.process_data(new_data)
-        # fill WHERE statement
-        where_statement = {}
-        if isinstance(self, _WithPrimaryKey):
-            where_statement = {"id": self.id}
-        else:
-            raise NotImplementedError()
-        
-        # compute parameters
-        logger.critical(set_statement)
-        logger.critical(where_statement)
-        parameters = tuple(self._get_field(name).serialize(value) if self._has_field(name) else value
-                           for statement in (set_statement, where_statement)
-                           for name, value in statement.items())
-
-        # execute query
-        self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
-                                    f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
-                                    f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
-                                parameters=parameters)
 
     # DELETE
     def delete(self):
@@ -432,7 +447,12 @@ class Table(metaclass=TableMeta):
         def lazy_loader(self):
             if not name in self.__dict__:
                 model, identifier = self._lazy_joins[name]
-                value = None if identifier is None else model.load(id=identifier)
+                if issubclass(model, Table):
+                    value = None if identifier is None else model.load(id=identifier)
+                else:
+                    value = [reference_type.load(id=reference_id)
+                             for reference_type, reference_id
+                             in zip(model, identifier)]
                 self.__dict__[name] = value
             return self.__dict__[name]
         setattr(cls, name, property(lazy_loader))
