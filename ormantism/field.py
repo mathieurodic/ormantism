@@ -17,6 +17,7 @@ from .utils.resolve_type import resolve_type
 from .utils.rebuild_pydantic_model import rebuild_pydantic_model
 from .utils.make_hashable import make_hashable
 from .utils.supermodel import to_json_schema, from_json_schema
+from .utils.serialize import serialize
 
 
 # Define some custom types
@@ -65,7 +66,7 @@ class Field:
         resolved_type = resolve_type(info.annotation)
         base_type, secondary_types, column_is_required = get_base_type(resolved_type)
         secondary_types = [secondary_type for secondary_type in secondary_types if secondary_type != type(None)]
-        if len(secondary_types) > 1:
+        if len(set(secondary_types)) > 1:
             raise ValueError(f"{table.__name__}.{name}: {secondary_types=}")
         secondary_type = secondary_types[0] if secondary_types else None
         default = None if info.default == PydanticUndefined else info.default
@@ -148,25 +149,19 @@ class Field:
     # conversion
 
     def serialize(self, value: any):
-        if self.base_type == JSON:
-            return json.dumps(value, ensure_ascii=False)
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (int, float, str, type(None))):
-            return value
-        if isinstance(value, (list, dict)):
-            return json.dumps(value, ensure_ascii=False)
-        if self.base_type in (set, tuple):
-            return json.dumps(list(value))
-        if isinstance(value, enum.Enum):
-            return value.name
-        if self.is_reference:
-            return value.id if value else None
-        if isinstance(value, types.GenericAlias) or inspect.isclass(value):
-            return to_json_schema(value)
-        if isinstance(value, BaseModel):
-            return value.model_dump_json()
-        raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`")
+        try:
+            if self.is_reference:
+                if self.secondary_type is None:
+                    return value.id if value else None
+                else:
+                    return [v.id for v in value]
+            if isinstance(value, types.GenericAlias) or inspect.isclass(value):
+                return to_json_schema(value)
+            else:
+                return serialize(value)
+        except Exception as error:
+            raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error}")
+
 
     def parse(self, value: any):
         if value is None:

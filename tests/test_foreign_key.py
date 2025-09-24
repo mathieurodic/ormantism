@@ -141,4 +141,4 @@ def test_generic_foreign_key_list():
     assert pointer.ref[1].bar == 3.14
     assert pointer.ref[2].id == reference1.id
     assert pointer.ref[2].__class__ == Reference1
-    assert pointer.ref[2].foobar == 42
+    assert pointer.ref[2].foo == 42

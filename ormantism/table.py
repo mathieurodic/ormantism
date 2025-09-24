@@ -98,7 +98,6 @@ class Table(metaclass=TableMeta):
         if self.id is not None and self.id >= 0:
             return
         self.check_read_only(init_data)
-        init_data = self.process_data(init_data)
         # special column for versioning
         if isinstance(self, _WithVersion):
             sql = f"UPDATE {self._get_table_name()} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
@@ -117,9 +116,11 @@ class Table(metaclass=TableMeta):
         # format data
         exclude = set(self.__class__.model_fields)
         include = set()
+        processed_data = self.process_data(init_data)
         formatted_data = {}
-        for name, value in init_data.items():
-            object.__setattr__(self, name, value)
+        # return
+        for name, value in processed_data.items():
+            # object.__setattr__(self, name, value)
             include.add(name)
             if name in exclude:
                 exclude.remove(name)
@@ -308,14 +309,14 @@ class Table(metaclass=TableMeta):
     def process_data(cls, data: dict) -> dict:
         data = deepcopy(data)
         for name in list(data):
+            value = data.pop(name)
             # is there no field for this name?
             try:
                 field = cls._get_field(name)
             except KeyError:
-                logger.warning(f"Invalid key for {cls.__name__}: {name}")
+                raise ValueError(f"Invalid key found in data for {cls.__name__}: {name}")
             # so, there is.
             if field.is_reference:
-                value = data.pop(name)
                 # scalar reference
                 if field.secondary_type is None:
                     if field.base_type == Table:
@@ -329,11 +330,12 @@ class Table(metaclass=TableMeta):
                 # ?
                 else:
                     raise NotImplementedError(field.name, value, field.base_type, field.secondary_type)
+            # model
+            elif isinstance(value, BaseModel):
+                data[name] = value.model_dump(mode="json")
+            # just some regular stuff
             else:
-                # not a reference, just some regular stuff
-                value = data[name]
-                if isinstance(value, BaseModel):
-                    data[name] = value.model_dump(mode="json")
+                data[name] = field.serialize(value)
         return data
 
     # DELETE

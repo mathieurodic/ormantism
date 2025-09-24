@@ -15,5 +15,5 @@ def get_all_tables() -> Iterable[type["Table"]]:
 
 def get_table_by_name(name: str) -> type["Table"]:
     for cls in get_all_tables():
-        if cls._get_table_name() == name:
+        if name in (cls._get_table_name(), cls.__name__):
             return cls

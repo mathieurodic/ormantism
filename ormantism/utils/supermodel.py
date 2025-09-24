@@ -121,7 +121,6 @@ class SuperModel(BaseModel):
             base_type, secondary_type, is_optional = get_base_type(field_info.annotation)
             if base_type == type:
                 if isinstance(value, dict):
-                    raise Exception(value)
                     value = from_json_schema(value)
                 if isinstance(value, type):
                     data[name] = value
