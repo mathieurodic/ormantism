@@ -180,7 +180,36 @@ class Table(metaclass=TableMeta):
         # return corresponding row if already exists
         loaded = cls.load(**searched_data)
         if loaded:
-            loaded.update(**data)
+            logger.warning(data)
+            changed_data = {key: value
+                            for key, value in data.items()
+                            if getattr(loaded, key) != value}
+            changed_data = {}
+            for name, value in data.items():
+                field = cls._get_field(name)
+                if field.is_reference:
+                    if name not in loaded._lazy_joins:
+                        if value is not None:
+                            changed_data[name] = value.id
+                            raise Exception()
+                    elif value is None:
+                        changed_data[name] = None
+                    else:
+                        foreign_key = loaded._lazy_joins[name]
+                        if isinstance(foreign_key, int):
+                            if foreign_key != value.id:
+                                changed_data[name] = value.id
+                        elif isinstance(foreign_key, tuple) and len(foreign_key) == 2:
+                            if foreign_key[0] != value.__class__ or foreign_key[1] != value.id:
+                                changed_data[name] = value
+                        else:
+                            ValueError("?!")
+
+                elif getattr(loaded, name) != value:
+                    if cls._get_field(name):
+                        changed_data[name] = value
+            logger.warning(changed_data)
+            loaded.update(**changed_data)
             return loaded
         # build new item if not found
         return cls(**data)
@@ -306,7 +335,7 @@ class Table(metaclass=TableMeta):
             raise AttributeError(f"Cannot set read-only attribute{plural} of {self.__class__.__name__}: {", ".join(read_only_fields)}")
 
     @classmethod
-    def process_data(cls, data: dict) -> dict:
+    def process_data(cls, data: dict, for_filtering: bool=False) -> dict:
         data = deepcopy(data)
         for name in list(data):
             value = data.pop(name)
@@ -335,7 +364,7 @@ class Table(metaclass=TableMeta):
                 data[name] = value.model_dump(mode="json")
             # just some regular stuff
             else:
-                data[name] = field.serialize(value)
+                data[name] = field.serialize(value, for_filtering=for_filtering)
         return data
 
     # DELETE
@@ -348,7 +377,8 @@ class Table(metaclass=TableMeta):
     # SELECT
     @classmethod
     def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
-        criteria = cls.process_data(criteria)
+        original_criteria = deepcopy(criteria)
+        criteria = cls.process_data(criteria, for_filtering=True)
         # criteria = {name: cls._get_field(name).serialize(value)
         #             for name, value in criteria.items()}
         if not preload:
@@ -372,17 +402,18 @@ class Table(metaclass=TableMeta):
         values = []
         sql += "\nWHERE 1 = 1"
         if issubclass(cls, _WithTimestamps) and not with_deleted:
-            criteria = dict(deleted_at=None, **criteria)
+            criteria |= dict(deleted_at=None)
         if criteria:
             # for name, value in cls.process_data(criteria).items():
             for name, value in criteria.items():
                 sql += f"\nAND {cls._get_table_name()}.{name}"
                 if value is None:
                     sql += " IS NULL"
-                elif cls._has_field(name) and cls._get_field(name).column_base_type == JSON:
-                    sql += " = JSON(?)"
                 else:
-                    sql += " = ?"
+                    if cls._has_field(name) and cls._get_field(name).column_base_type == JSON and not isinstance(original_criteria.get(name), str):
+                        sql += " = JSON(?)"
+                    else:
+                        sql += " = ?"
                     values.append(value)
 
         # ORDER & LIMIT

@@ -7,6 +7,7 @@ from pydantic import BaseModel, create_model, TypeAdapter
 
 from .is_type_annotation import is_type_annotation
 from .get_base_type import get_base_type
+from .find_subclass import find_subclass
 
 
 logger = logging.getLogger(__name__)
@@ -49,15 +50,6 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
     # Handle object types that might be SuperModel subclasses
     if schema_type == "object" and title:
         # Discover all SuperModel subclasses dynamically
-        def find_subclass(cls, name):
-            if cls.__name__ == name:
-                return cls
-            for sub in cls.__subclasses__():
-                result = find_subclass(sub, name)
-                if result:
-                    return result
-            return None
-        
         model_cls = find_subclass(SuperModel, title)
         if model_cls:
             return model_cls

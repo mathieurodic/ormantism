@@ -148,20 +148,19 @@ class Field:
 
     # conversion
 
-    def serialize(self, value: any):
+    def serialize(self, value: any, for_filtering: bool=False):
         try:
             if self.is_reference:
                 if self.secondary_type is None:
                     return value.id if value else None
-                else:
-                    return [v.id for v in value]
+                return [v.id for v in value]
             if isinstance(value, types.GenericAlias) or inspect.isclass(value):
                 return to_json_schema(value)
-            else:
-                return serialize(value)
+            if not for_filtering and self.base_type == JSON and isinstance(value, str):
+                return json.dumps(value)
+            return serialize(value)
         except Exception as error:
             raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error}")
-
 
     def parse(self, value: any):
         if value is None:
