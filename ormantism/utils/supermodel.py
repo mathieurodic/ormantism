@@ -110,7 +110,7 @@ class SuperModel(BaseModel):
             field_info = self.__class__.model_fields.get(name)
             if not field_info:
                 raise NameError(f"{self.__class__.__name__} has no field for name: {name}")
-            base_type, secondary_type, is_optional = get_base_type(field_info.annotation)
+            base_type, secondary_type, is_required = get_base_type(field_info.annotation)
             if base_type == type:
                 if isinstance(value, dict):
                     value = from_json_schema(value)
@@ -119,6 +119,8 @@ class SuperModel(BaseModel):
                 elif isinstance(value, GenericAlias):
                     type_data[name] = value
                     data[name] = type(None)
+                elif value is None and not is_required:
+                    pass
                 else:
                     raise ValueError(f"Not a type: {value}")
         # validate non-types with BaseModel

@@ -39,6 +39,13 @@ class Field:
 
     @property
     @cache
+    def sql_is_json(self) -> bool:
+        if issubclass(self.base_type, BaseModel) or self.base_type in (list, dict, type) or self.full_type == JSON:
+            return True
+        return False
+
+    @property
+    @cache
     def reference_type(self) -> type:
         if not self.is_reference:
             return None
@@ -66,8 +73,15 @@ class Field:
         resolved_type = resolve_type(info.annotation)
         base_type, secondary_types, column_is_required = get_base_type(resolved_type)
         secondary_types = [secondary_type for secondary_type in secondary_types if secondary_type != type(None)]
-        if len(set(secondary_types)) > 1:
-            raise ValueError(f"{table.__name__}.{name}: {secondary_types=}")
+        secondary_types_count = len(set(secondary_types))
+        if secondary_types_count == 0:
+            secondary_type = None
+        elif base_type == dict and secondary_types_count == 2:
+            secondary_type = secondary_types
+        elif secondary_types_count == 1:
+            secondary_type = secondary_types[0]
+        else:
+            raise ValueError(f"{table.__name__}.{name}: {secondary_types=} ({base_type=})")
         secondary_type = secondary_types[0] if secondary_types else None
         default = None if info.default == PydanticUndefined else info.default
         if info.default_factory:
@@ -156,7 +170,7 @@ class Field:
                 return [v.id for v in value]
             if isinstance(value, types.GenericAlias) or inspect.isclass(value):
                 return to_json_schema(value)
-            if not for_filtering and self.base_type == JSON and isinstance(value, str):
+            if self.base_type == JSON:
                 return json.dumps(value)
             return serialize(value)
         except Exception as error:

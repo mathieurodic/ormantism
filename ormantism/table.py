@@ -126,9 +126,14 @@ class Table(metaclass=TableMeta):
                 exclude.remove(name)
             else:
                 formatted_data[name] = value
-        formatted_data |= self.model_dump(include=include,
-                                          exclude=exclude,
-                                          mode="json")
+
+        for name, field in self._get_fields().items():
+            if name not in include or name in exclude:
+                continue
+            if field.is_reference:
+                continue
+            formatted_data[name] = field.serialize(getattr(self, name))
+
         # perform insertion
         if formatted_data:
             sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(formatted_data.keys())})\n"
@@ -159,9 +164,10 @@ class Table(metaclass=TableMeta):
             raise NotImplementedError()
 
         # compute parameters
-        parameters = tuple(self._get_field(name).serialize(value) if self._has_field(name) else value
+
+        parameters = tuple(value
                            for statement in (set_statement, where_statement)
-                           for name, value in statement.items())
+                           for value in statement.values())
 
         # execute query
         self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
@@ -406,11 +412,15 @@ class Table(metaclass=TableMeta):
         if criteria:
             # for name, value in cls.process_data(criteria).items():
             for name, value in criteria.items():
-                sql += f"\nAND {cls._get_table_name()}.{name}"
+                json_wrap = (cls._has_field(name) and cls._get_field(name).sql_is_json and not isinstance(original_criteria.get(name), str))
+                if json_wrap:
+                    sql += f"\nAND JSON({cls._get_table_name()}.{name})"
+                else:
+                    sql += f"\nAND {cls._get_table_name()}.{name}"
                 if value is None:
                     sql += " IS NULL"
                 else:
-                    if cls._has_field(name) and cls._get_field(name).column_base_type == JSON and not isinstance(original_criteria.get(name), str):
+                    if json_wrap:
                         sql += " = JSON(?)"
                     else:
                         sql += " = ?"
