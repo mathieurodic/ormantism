@@ -1,6 +1,7 @@
 import inspect
 import typing
 import enum
+import datetime
 from pydantic import BaseModel
 
 
@@ -22,7 +23,7 @@ def make_hashable(thing: any):
     if isinstance(thing, (list, tuple, set)):
         return tuple(make_hashable(value) for value in thing)
     # scalar types
-    if isinstance(thing, (int, float, str, type(None))):
+    if isinstance(thing, (int, float, str, type(None), datetime.datetime)):
         return thing
     # classes
     if inspect.isclass(thing) or isinstance(thing, type) or typing.get_origin(thing):

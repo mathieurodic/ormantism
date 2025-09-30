@@ -1,6 +1,4 @@
-from copy import deepcopy
 from typing import ClassVar
-import json
 import datetime
 import logging
 from functools import cache
@@ -11,7 +9,7 @@ from pydantic._internal._model_construction import ModelMetaclass
 from .utils.supermodel import SuperModel
 from .utils.make_hashable import make_hashable
 from .transaction import transaction
-from .field import Field, JSON
+from .field import Field
 
 
 logger = logging.getLogger("ormantism")
@@ -26,8 +24,11 @@ class _WithSoftDelete(SuperModel):
 class _WithCreatedAtTimestamp(SuperModel):
     created_at: datetime.datetime = None
 
-class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete):
+class _WithUpdatedAtTimestamp(SuperModel):
     updated_at: datetime.datetime|None = None
+
+class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete, _WithUpdatedAtTimestamp):
+    pass
 
 class _WithVersion(_WithSoftDelete):
     version: int = 0
@@ -38,6 +39,7 @@ class TableMeta(ModelMetaclass):
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool=True,
                 with_created_at_timestamp: bool=False,
+                with_updated_at_timestamp: bool=False,
                 with_timestamps: bool=False,
                 versioning_along: tuple[str]=None,
                 connection_name: str=None,
@@ -46,6 +48,8 @@ class TableMeta(ModelMetaclass):
         default_bases: tuple[type[SuperModel]] = tuple()
         if with_primary_key:
             default_bases += (_WithPrimaryKey,)
+        if with_updated_at_timestamp:
+            default_bases += (_WithUpdatedAtTimestamp,)
         if with_created_at_timestamp:
             default_bases += (_WithCreatedAtTimestamp,)
         if with_timestamps:
@@ -156,6 +160,8 @@ class Table(metaclass=TableMeta):
         self.check_read_only(new_data)
         # fill SET statement
         set_statement = self.process_data(new_data)
+        if not set_statement:
+            return
         # fill WHERE statement
         where_statement = {}
         if isinstance(self, _WithPrimaryKey):
@@ -163,16 +169,20 @@ class Table(metaclass=TableMeta):
         else:
             raise NotImplementedError()
 
-        # compute parameters
+        # compute SQL
+        sql = f"UPDATE {self._get_table_name()}\n"
+        sql += f"SET {", ".join(f"{k} = ?" for k in set_statement)}"
+        if isinstance(self, _WithUpdatedAtTimestamp):
+            sql += ", updated_at = CURRENT_TIMESTAMP"
+        sql += f"\nWHERE {"AND ".join(f"{k} = ?" for k in where_statement)}"
 
+        # compute parameters
         parameters = tuple(value
                            for statement in (set_statement, where_statement)
                            for value in statement.values())
 
         # execute query
-        self._execute_returning(sql=f"UPDATE {self._get_table_name()}\n"
-                                    f"SET {", ".join(f"{k} = ?" for k in set_statement)}\n"
-                                    f"WHERE {", ".join(f"{k} = ?" for k in where_statement)}",
+        self._execute_returning(sql=sql,
                                 parameters=parameters)
 
     # INSERT or SELECT / UPDATE
@@ -342,7 +352,7 @@ class Table(metaclass=TableMeta):
 
     @classmethod
     def process_data(cls, data: dict, for_filtering: bool=False) -> dict:
-        data = deepcopy(data)
+        data = dict(**data)
         for name in list(data):
             value = data.pop(name)
             # is there no field for this name?
@@ -383,10 +393,8 @@ class Table(metaclass=TableMeta):
     # SELECT
     @classmethod
     def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
-        original_criteria = deepcopy(criteria)
-        criteria = cls.process_data(criteria, for_filtering=True)
-        # criteria = {name: cls._get_field(name).serialize(value)
-        #             for name, value in criteria.items()}
+        original_criteria = criteria
+        processed_criteria = cls.process_data(criteria, for_filtering=True)
         if not preload:
             preload = []
         if isinstance(preload, str):
@@ -408,15 +416,17 @@ class Table(metaclass=TableMeta):
         values = []
         sql += "\nWHERE 1 = 1"
         if issubclass(cls, _WithTimestamps) and not with_deleted:
-            criteria |= dict(deleted_at=None)
-        if criteria:
-            # for name, value in cls.process_data(criteria).items():
-            for name, value in criteria.items():
+            processed_criteria |= dict(deleted_at=None)
+        if processed_criteria:
+            # for name, value in cls.process_data(processed_criteria).items():
+            for name, value in processed_criteria.items():
                 json_wrap = (cls._has_field(name) and cls._get_field(name).sql_is_json and not isinstance(original_criteria.get(name), str))
+                # column
                 if json_wrap:
                     sql += f"\nAND JSON({cls._get_table_name()}.{name})"
                 else:
                     sql += f"\nAND {cls._get_table_name()}.{name}"
+                # comparison
                 if value is None:
                     sql += " IS NULL"
                 else:

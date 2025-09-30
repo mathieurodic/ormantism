@@ -32,7 +32,7 @@ def get_field_type(field_info: Dict[str, Any]) -> Any:
     else:
         return str  # Default type
 
-def rebuild_pydantic_model(schema: Dict[str, Any]) -> Type[BaseModel]:
+def rebuild_pydantic_model(schema: Dict[str, Any], base=BaseModel) -> Type[BaseModel]:
 
     # resolve ref (in necessary)
     schema = deepcopy(schema)
@@ -59,7 +59,7 @@ def rebuild_pydantic_model(schema: Dict[str, Any]) -> Type[BaseModel]:
             field_type = Optional[field_type]
         fields[field_name] = (field_type, field_info.get('default', ...))
 
-    return create_model(model_name, **fields)
+    return create_model(model_name, **fields, __base__=base)
 
 
 if __name__ == "__main__":

@@ -171,7 +171,7 @@ class Field:
             if isinstance(value, types.GenericAlias) or inspect.isclass(value):
                 return to_json_schema(value)
             if self.base_type == JSON:
-                return json.dumps(value)
+                return json.dumps(value, ensure_ascii=False)
             return serialize(value)
         except Exception as error:
             raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error}")

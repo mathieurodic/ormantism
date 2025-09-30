@@ -54,7 +54,11 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
         if model_cls:
             return model_cls
         else:
-            raise TypeError(f"Cannot find subclass of SuperModel: {title}")
+            logger.warning(f"Cannot find subclass of SuperModel: {title}")
+            from .rebuild_pydantic_model import rebuild_pydantic_model
+            return rebuild_pydantic_model(schema=schema,
+                                          base=SuperModel)
+            # raise TypeError(f"Cannot find subclass of SuperModel: {title}")
 
     # Handle basic scalar and container types
     type_map = {
