@@ -21,7 +21,9 @@ def to_json_schema(T: type) -> dict:
     if "$defs" in wrapper_schema:
         schema["$defs"] = schema.get("$defs", {}) | wrapper_schema["$defs"]
     # original class name should be shema titles
-    schema["title"] = T.__name__
+    name = getattr(T, "__name__", None)
+    if name is not None:
+        schema["title"] = name
     return schema
 
 def from_json_schema(schema: dict, root_schema: dict=None) -> type:
@@ -120,13 +122,13 @@ class SuperModel(BaseModel):
                     value = from_json_schema(value)
                 if isinstance(value, type):
                     data[name] = value
-                elif isinstance(value, GenericAlias):
+                elif isinstance(value, (GenericAlias, types.UnionType)):
                     type_data[name] = value
                     data[name] = type(None)
                 elif value is None and not is_required:
                     pass
                 else:
-                    raise ValueError(f"Not a type: {value}")
+                    raise ValueError(f"Not a type: {value} ({type(value)})")
         # validate non-types with BaseModel
         BaseModel.__init__(self, **data)
         # set type attributes without BaseModel check

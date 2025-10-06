@@ -1,6 +1,7 @@
 from typing import ClassVar
 import datetime
 import logging
+import sqlite3
 from functools import cache
 
 from pydantic import BaseModel
@@ -337,10 +338,16 @@ class Table(metaclass=TableMeta):
         new_fields = [field for field in cls._get_fields().values()
                       if field.column_name not in columns_names]
         for field in new_fields:
+            logger.info("ADD COLUMN %s.%s", field.table.__name__, field.name)
             for sql_creation in field.sql_creations:
-                cls._execute(f"ALTER TABLE {cls._get_table_name()} ADD COLUMN {sql_creation}", check=False)
-                if field.is_reference:
-                    raise Exception("cannot add foreign key constraint on existing table")
+                # if sql.
+                # if field.is_reference:
+                #     raise Exception("cannot add foreign key constraint on existing table")
+                try:
+                    cls._execute(f"ALTER TABLE {cls._get_table_name()} ADD COLUMN {sql_creation}", check=False)
+                except sqlite3.OperationalError as error:
+                    if "duplicate column name" not in error.args[0]:
+                        raise
 
     def check_read_only(self, data):
         """Check we are not attempting to alter read-only fields"""

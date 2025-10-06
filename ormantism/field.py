@@ -97,7 +97,6 @@ class Field:
                    is_reference=issubclass(base_type, Table) or issubclass(secondary_type, Table))
 
     @property
-    @cache
     def sql_creations(self) -> Iterable[str]:
 
         # null, default
@@ -127,6 +126,9 @@ class Field:
                 if self.secondary_type == Table:
                     yield f"{self.name}_tables JSON{sql_null}{sql_default}"
                 yield f"{self.name}_ids JSON{sql_null}{sql_default}"
+            # whut?
+            else:
+                raise Exception(self.base_type)
             return
 
         # otherwise, only one column to create
@@ -168,13 +170,14 @@ class Field:
                 if self.secondary_type is None:
                     return value.id if value else None
                 return [v.id for v in value]
-            if isinstance(value, types.GenericAlias) or inspect.isclass(value):
-                return to_json_schema(value)
             if self.base_type == JSON:
                 return json.dumps(value, ensure_ascii=False)
+            if self.base_type == type:
+                return to_json_schema(value)
             return serialize(value)
         except Exception as error:
-            raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error}")
+            raise
+            # raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error.__class__.__name__}({error})")
 
     def parse(self, value: any):
         if value is None:
