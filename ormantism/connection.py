@@ -9,10 +9,20 @@ logger = logging.getLogger(__name__)
 _urls: dict[str, str] = {}
 def connect(database_url: str, name: str=None):
     _urls[name] = database_url
-    if name:
-        logger.warning("Set database `%s` to `%s`", name, database_url)
+
+    # build rerpresentation for database URL
+    if isinstance(database_url, str):
+        url_representation = repr(database_url)
     else:
-        logger.warning("Set default database to `%s`", database_url)
+        if not callable(database_url):
+            raise ValueError("`database_url` should either be a `str`, or a method returning a `str`")
+        url_representation = f"({database_url.__module__}:{database_url.__code__.co_firstlineno}:{database_url.__name__})"
+
+    # different messages, depending on provided name
+    if name:
+        logger.warning("Set database %s to %s", repr(name), url_representation)
+    else:
+        logger.warning("Set default database to %s", url_representation)
     logger.info("\n".join(f"{frame_info.filename}:{frame_info.lineno}"
                           for frame_info
                           in inspect.stack()

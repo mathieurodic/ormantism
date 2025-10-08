@@ -1,5 +1,6 @@
 import logging
 import types
+import typing
 from copy import copy
 from types import GenericAlias
 
@@ -45,6 +46,12 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
             for key in path.split("/"):
                 cursor = cursor[key]
         schema |= cursor
+
+    # Is it a union?
+    if "anyOf" in schema:
+        annotations = [from_json_schema(subschema)
+                       for subschema in schema["anyOf"]]
+        return typing.Union[*annotations]
 
     schema_type = schema.get("type")
     title = schema.get("title")
