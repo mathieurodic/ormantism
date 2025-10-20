@@ -1,4 +1,5 @@
 from typing import ClassVar
+import inspect
 import datetime
 import logging
 import sqlite3
@@ -305,7 +306,7 @@ class Table(metaclass=TableMeta):
         for field in cls._get_fields().values():
             if field.is_reference:
                 for t in (field.base_type, field.secondary_type):
-                    if issubclass(t, Table) and t != Table and t not in created:
+                    if inspect.isclass(t) and issubclass(t, Table) and t != Table and t not in created:
                         t._create_table(created)
         # initialize statements for table creation
         statements = []
@@ -507,7 +508,7 @@ class Table(metaclass=TableMeta):
         def lazy_loader(self):
             if not name in self.__dict__:
                 model, identifier = self._lazy_joins[name]
-                if issubclass(model, Table):
+                if inspect.isclass(model) and issubclass(model, Table):
                     value = None if identifier is None else model.load(id=identifier)
                 else:
                     value = [reference_type.load(id=reference_id)

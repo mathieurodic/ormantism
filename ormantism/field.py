@@ -86,6 +86,7 @@ class Field:
         default = None if info.default == PydanticUndefined else info.default
         if info.default_factory:
             default = info.default_factory()
+        is_reference = lambda t: inspect.isclass(t) and issubclass(t, Table)
         return cls(table=table,
                    name=name,
                    base_type=base_type,
@@ -94,7 +95,7 @@ class Field:
                    default=default,
                    column_is_required=column_is_required,
                    is_required=column_is_required and info.is_required(),
-                   is_reference=issubclass(base_type, Table) or issubclass(secondary_type, Table))
+                   is_reference=is_reference(base_type) or is_reference(secondary_type))
 
     @property
     def sql_creations(self) -> Iterable[str]:
