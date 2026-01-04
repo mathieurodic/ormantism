@@ -116,7 +116,8 @@ class SuperModel(BaseModel):
     def __init__(self, /, **data: any) -> None:
         # for triggers
         init_data = copy(data)
-        self.trigger("before_create", data)
+        if not self.trigger("before_create", data):
+            return
         # process type attributes separately
         type_data = {}
         for name, value in data.items():
@@ -238,7 +239,8 @@ class SuperModel(BaseModel):
             logger.debug("Calling trigger %s for %s: %s", event_name, self.__class__.__name__, method)
             if method:
                 if method(self, *args, **kwargs) is False:
-                    break
+                    return False
+        return True
 
     def on_before_create(self, init_data: dict):
         pass
