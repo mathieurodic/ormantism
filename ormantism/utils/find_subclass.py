@@ -8,7 +8,12 @@ def _get_subclasses(base: type) -> Iterable[type]:
 
 
 def find_subclass(base: type, name: str):
+    subclasses = []
     for subclass in _get_subclasses(base):
         if subclass.__name__ == name:
-            return subclass
-    return None
+            subclasses.append(subclass)
+    if len(subclasses) > 1:
+        raise ValueError(f"More than one subclass of `{base.__name__}` found with name `{name}`")
+    if len(subclasses) == 0:
+        return None
+    return subclasses[0]
