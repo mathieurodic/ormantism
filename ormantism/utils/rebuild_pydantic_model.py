@@ -1,8 +1,9 @@
 """Build Pydantic models from JSON Schema (e.g. for type fields)."""
 
 from copy import deepcopy
+from typing import Any, Dict, List, Optional, Type
+
 from pydantic import BaseModel, create_model
-from typing import Dict, Type, Any, Optional, List
 
 
 def get_field_type(field_info: Dict[str, Any]) -> Any:
@@ -11,16 +12,16 @@ def get_field_type(field_info: Dict[str, Any]) -> Any:
 
     if field_type == 'string':
         return str
-    elif field_type == 'integer':
+    if field_type == 'integer':
         return int
-    elif field_type == 'number':
+    if field_type == 'number':
         return float
-    elif field_type == 'boolean':
+    if field_type == 'boolean':
         return bool
-    elif field_type == 'array':
+    if field_type == 'array':
         items = field_info.get('items', {})
         return List[get_field_type(items)]
-    elif field_type == 'object':
+    if field_type == 'object':
         nested_model_name = field_info.get('title', 'NestedModel')
         nested_properties = field_info.get('properties', {})
         nested_required = field_info.get('required', [])
@@ -33,8 +34,7 @@ def get_field_type(field_info: Dict[str, Any]) -> Any:
             nested_fields[name] = (nested_field_type, info.get('default', ...))
 
         return create_model(nested_model_name, **nested_fields)
-    else:
-        return str  # Default type
+    return str  # Default type
 
 def rebuild_pydantic_model(schema: Dict[str, Any], base=BaseModel) -> Type[BaseModel]:
     """Create a Pydantic model class from a JSON Schema object (supports $ref)."""

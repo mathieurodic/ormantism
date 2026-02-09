@@ -11,7 +11,10 @@ def _get_subclasses(base: type) -> Iterable[type]:
 
 
 def find_subclass(base: type, name: str):
-    """Return the unique subclass of base with __name__ == name, or None; raises if multiple match."""
+    """Return the unique subclass of base with __name__ == name, or None.
+
+    Raises if multiple subclasses match.
+    """
     subclasses = []
     for subclass in _get_subclasses(base):
         if subclass.__name__ == name:

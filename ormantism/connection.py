@@ -12,23 +12,31 @@ _urls: dict[str, str] = {}
 def connect(database_url: str, name: str=None):
     _urls[name] = database_url
 
-    # build rerpresentation for database URL
+    # build representation for database URL
     if isinstance(database_url, str):
         url_representation = repr(database_url)
     else:
         if not callable(database_url):
-            raise ValueError("`database_url` should either be a `str`, or a method returning a `str`")
-        url_representation = f"({database_url.__module__}:{database_url.__code__.co_firstlineno}:{database_url.__name__})"
+            raise ValueError(
+                "`database_url` should either be a `str`, or a method "
+                "returning a `str`"
+            )
+        url_representation = (
+            f"({database_url.__module__}:{database_url.__code__.co_firstlineno}"
+            f":{database_url.__name__})"
+        )
 
     # different messages, depending on provided name
     if name:
         logger.warning("Set database %s to %s", repr(name), url_representation)
     else:
         logger.warning("Set default database to %s", url_representation)
-    logger.info("\n".join(f"{frame_info.filename}:{frame_info.lineno}"
-                          for frame_info
-                          in inspect.stack()
-                          if ".venv" not in frame_info.filename))
+    stack_frames = (
+        f"{frame_info.filename}:{frame_info.lineno}"
+        for frame_info in inspect.stack()
+        if ".venv" not in frame_info.filename
+    )
+    logger.info("\n".join(stack_frames))
 
 
 def _get_connection(name=None):
@@ -79,3 +87,4 @@ def _get_connection(name=None):
             port=parsed_url.port
         )
         return connection
+    raise ValueError(f"Unsupported database scheme: {parsed_url.scheme}")

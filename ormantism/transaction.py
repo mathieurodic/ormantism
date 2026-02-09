@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 class TransactionError(Exception):
     """Custom exception for transaction-related errors"""
-    pass
 
 
 class TransactionManager:
@@ -27,7 +26,7 @@ class TransactionManager:
         """
         self._connection_factory = connection_factory
         self._local = threading.local()
-    
+
     # get connection (built on first call)
 
     def _get_connection(self):
@@ -35,13 +34,13 @@ class TransactionManager:
         if not hasattr(self._local, 'connection'):
             self._local.connection = self._connection_factory()
         return self._local.connection
-    
+
     # transaction level
 
     def _get_transaction_level(self):
         """Get current transaction nesting level"""
         return getattr(self._local, 'transaction_level', 0)
-    
+
     def _set_transaction_level(self, level):
         """Set current transaction nesting level."""
         self._local.transaction_level = level
@@ -51,14 +50,14 @@ class TransactionManager:
         level = self._get_transaction_level()
         self._set_transaction_level(level + 1)
         return level + 1
-    
+
     def _decrement_transaction_level(self):
         """Decrement transaction nesting level and return the new level."""
         level = self._get_transaction_level()
         new_level = max(0, level - 1)
         self._set_transaction_level(new_level)
         return new_level
-    
+
     # actual transaction itself
 
     @contextmanager
@@ -70,43 +69,42 @@ class TransactionManager:
             Transaction: Transaction object for executing statements
         """
         connection = self._get_connection()
-        
+
         # Increment nesting level
         new_level = self._increment_transaction_level()
-        
+
         # Create savepoint name for nested transactions
         savepoint_name = f"savepoint_{new_level}" if new_level > 1 else None
-        
+
         transaction_obj = Transaction(connection, self, new_level)
-        
+
         try:
             # Create savepoint for nested transactions
             if savepoint_name:
-                logger.debug(f"SAVEPOINT {savepoint_name}")
+                logger.debug("SAVEPOINT %s", savepoint_name)
                 connection.execute(f"SAVEPOINT {savepoint_name}")
-            
+
             yield transaction_obj
-            
+
             # Commit or release savepoint based on nesting level
             if savepoint_name:
-                logger.debug(f"RELEASE SAVEPOINT {savepoint_name}")
+                logger.debug("RELEASE SAVEPOINT %s", savepoint_name)
                 connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             else:
                 # For top-level transaction, commit
                 logger.debug("COMMIT")
                 connection.commit()
-            
-        except Exception as e:
+
+        except Exception:
             # Rollback to savepoint for nested transactions
             if savepoint_name:
-                logger.debug(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                logger.debug("ROLLBACK TO SAVEPOINT %s", savepoint_name)
                 connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
             else:
                 # For top-level transaction, full rollback
                 connection.rollback()
             raise
         finally:
-            # Decrement nesting level
             self._decrement_transaction_level()
 
 
@@ -119,7 +117,7 @@ class Transaction:
         self._manager = manager
         self._level = level
         self._active = True
-    
+
     def execute(self, sql, parameters=()):
         """
         Execute a statement within this transaction.
@@ -137,7 +135,7 @@ class Transaction:
         """
         if not self._active:
             raise TransactionError("Transaction is no longer active")
-        
+
         # format parameters
         for p, parameter in enumerate(parameters):
             if isinstance(parameter, (dict, list)):
@@ -148,12 +146,14 @@ class Transaction:
         # Check if we're trying to use a higher-level transaction
         current_level = self._manager._get_transaction_level()
         if current_level > self._level:
-            raise TransactionError(
-                f"Cannot use transaction level {self._level} from level {current_level}. "
-                "Higher-level transactions cannot be accessed from nested transactions."
+            msg = (
+                f"Cannot use transaction level {self._level} from level "
+                f"{current_level}. Higher-level transactions cannot be "
+                "accessed from nested transactions."
             )
+            raise TransactionError(msg)
         return self._connection.execute(sql, parameters)
-    
+
     def __enter__(self):
         """Context manager entry; returns self."""
         return self
@@ -166,10 +166,12 @@ class Transaction:
 _transaction_managers: dict[str, TransactionManager] = {}
 
 def transaction(connection_name: str = "default"):
-    """Return a context manager for a transaction on the named connection (default: \"default\")."""
+    """Return a context manager for a transaction (default connection: \"default\")."""
     if connection_name not in _transaction_managers:
         def connection_factory_builder(name):
-            return lambda : _get_connection(name=name)
+            return lambda: _get_connection(name=name)
         connection_factory = connection_factory_builder(connection_name)
-        _transaction_managers[connection_name] = TransactionManager(connection_factory=connection_factory)
+        _transaction_managers[connection_name] = TransactionManager(
+            connection_factory=connection_factory
+        )
     return _transaction_managers[connection_name].transaction()

@@ -1,0 +1,123 @@
+[MAIN]
+# Python version for version-dependent checks (matches pyproject.toml requires-python)
+py-version=3.12
+
+# Paths to skip (base names only)
+ignore=CVS,.venv,.git,__pycache__,build,dist,.eggs
+
+# Ignore patterns (regex on base names)
+ignore-patterns=^\.#|\.pyc$
+
+# Source roots for import resolution (relative to cwd)
+source-roots=.
+
+# Third-party packages used by this project (for import order checks)
+known-third-party=pydantic,pydantic_core,datamodel_code_generator
+
+# Only show messages with these confidence levels (avoid noisy inference)
+confidence=HIGH,CONTROL_FLOW,INFERENCE,INFERENCE_FAILURE,UNDEFINED
+
+# Jobs (1 = no parallelism; increase for large codebases)
+jobs=1
+
+[BASIC]
+# Naming
+argument-naming-style=snake_case
+attr-naming-style=snake_case
+class-naming-style=PascalCase
+class-const-naming-style=UPPER_CASE
+const-naming-style=UPPER_CASE
+function-naming-style=snake_case
+method-naming-style=snake_case
+module-naming-style=snake_case
+variable-naming-style=snake_case
+
+# Allow common short/generic names
+good-names=i,j,k,ex,Run,_
+bad-names=foo,bar,baz,toto,tutu,tata
+
+# Docstrings: only require for non-private (min length -1 = use style default)
+docstring-min-length=-1
+no-docstring-rgx=^_
+
+[CLASSES]
+defining-attr-methods=__init__,__new__,setUp,asyncSetUp,__post_init__
+valid-classmethod-first-arg=cls
+exclude-protected=_asdict,_fields,_replace,_source,_make,os._exit
+
+[DESIGN]
+max-args=7
+max-attributes=10
+max-bool-expr=5
+max-branches=15
+max-locals=20
+max-parents=7
+max-positional-arguments=7
+max-public-methods=25
+max-returns=6
+max-statements=60
+min-public-methods=0
+
+[EXCEPTIONS]
+overgeneral-exceptions=builtins.BaseException,builtins.Exception
+
+[FORMAT]
+max-line-length=100
+indent-string='    '
+indent-after-paren=4
+ignore-long-lines=^\s*(# )?<?https?://\S+>?$
+
+[IMPORTS]
+allow-reexport-from-package=no
+allow-wildcard-with-all=no
+
+[MESSAGES CONTROL]
+# Disable noisy or project-inappropriate checks
+disable=
+    raw-checker-failed,
+    bad-inline-option,
+    locally-disabled,
+    file-ignored,
+    suppressed-message,
+    useless-suppression,
+    deprecated-pragma,
+    use-implicit-booleaness-not-comparison-to-string,
+    use-implicit-booleaness-not-comparison-to-zero,
+    use-symbolic-message-instead,
+    fixme,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring
+
+enable=
+
+[REFACTORING]
+max-nested-blocks=5
+never-returning-functions=sys.exit,argparse.parse_error
+
+[REPORTS]
+score=yes
+reports=no
+evaluation=max(0, 0 if fatal else 10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10))
+
+[SIMILARITIES]
+ignore-comments=yes
+ignore-docstrings=yes
+ignore-imports=yes
+ignore-signatures=yes
+min-similarity-lines=4
+
+[TYPECHECK]
+contextmanager-decorators=contextlib.contextmanager
+ignore-none=yes
+ignore-on-opaque-inference=yes
+ignored-classes=optparse.Values,thread._local,_thread._local,argparse.Namespace
+# Pydantic and dynamic models
+generated-members=
+ignored-checks-for-mixins=no-member,not-async-context-manager,not-context-manager,attribute-defined-outside-init
+
+[VARIABLES]
+allow-global-unused-variables=yes
+dummy-variables-rgx=_+$|(_[a-zA-Z0-9_]*[a-zA-Z0-9]+?$)|dummy|^ignored_|^unused_
+ignored-argument-names=_.*|^ignored_|^unused_
+init-import=no

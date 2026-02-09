@@ -6,7 +6,7 @@ import typing
 from copy import copy
 from types import GenericAlias
 
-from pydantic import BaseModel, create_model, TypeAdapter
+from pydantic import BaseModel, create_model
 
 from .is_type_annotation import is_type_annotation
 from .get_base_type import get_base_type
@@ -65,12 +65,9 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
         model_cls = find_subclass(SuperModel, title)
         if model_cls:
             return model_cls
-        else:
-            logger.warning(f"Cannot find subclass of SuperModel: {title}")
-            from .rebuild_pydantic_model import rebuild_pydantic_model
-            return rebuild_pydantic_model(schema=schema,
-                                          base=SuperModel)
-            # raise TypeError(f"Cannot find subclass of SuperModel: {title}")
+        logger.warning("Cannot find subclass of SuperModel: %s", title)
+        from .rebuild_pydantic_model import rebuild_pydantic_model
+        return rebuild_pydantic_model(schema=schema, base=SuperModel)
 
     # Handle basic scalar and container types
     type_map = {
@@ -112,7 +109,7 @@ class SuperModel(BaseModel):
                 else:
                     new_annotations[field_name] = annotation
             cls.__annotations__ = new_annotations
-        
+
         # Call parent's __init_subclass__
         super().__init_subclass__(**kwargs)
 
@@ -128,9 +125,13 @@ class SuperModel(BaseModel):
         type_data = {}
         for name, value in data.items():
             field_info = self.__class__.model_fields.get(name)
-            if not field_info:
-                raise NameError(f"{self.__class__.__name__} has no field for name: {name}")
-            base_type, secondary_type, is_required = get_base_type(field_info.annotation)
+            if field_info is None:
+                raise NameError(
+                    f"{self.__class__.__name__} has no field for name: {name}"
+                )
+            base_type, _secondary_type, is_required = get_base_type(
+                field_info.annotation
+            )
             if base_type == type:
                 if isinstance(value, dict):
                     value = from_json_schema(value)
@@ -150,9 +151,9 @@ class SuperModel(BaseModel):
             object.__setattr__(self, name, value)
         # trigger
         self.trigger("after_create", init_data)
-    
+
     # serialization
-        
+
     def model_dump(self, *, mode: str = 'python', include=None, exclude=None,
                    by_alias: bool = False, exclude_unset: bool = False,
                    exclude_defaults: bool = False, exclude_none: bool = False,
@@ -172,7 +173,7 @@ class SuperModel(BaseModel):
         result = {}
         if mode == "json":
             cls = self.__class__
-            for key, field_info in cls.model_fields.items():
+            for key, _ in cls.model_fields.items():
                 if key not in include:
                     continue
                 if key in exclude:
@@ -186,13 +187,21 @@ class SuperModel(BaseModel):
                     try:
                         result[key] = to_json_schema(value)
                     except Exception as e:
-                        raise ValueError(f"Failed to serialize type field '{key}': {e}")
-        
-        result |= BaseModel.model_dump(self,
-            mode=mode, include=include, exclude=exclude,
-            by_alias=by_alias, exclude_unset=exclude_unset,
-            exclude_defaults=exclude_defaults, exclude_none=exclude_none,
-            round_trip=round_trip, warnings=warnings
+                        raise ValueError(
+                            f"Failed to serialize type field '{key}': {e}"
+                        ) from e
+
+        result |= BaseModel.model_dump(
+            self,
+            mode=mode,
+            include=include,
+            exclude=exclude,
+            by_alias=by_alias,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            exclude_none=exclude_none,
+            round_trip=round_trip,
+            warnings=warnings,
         )
 
         return result
@@ -207,16 +216,16 @@ class SuperModel(BaseModel):
         return getattr(self, name)
 
     def update(self, **new_data):
-        """Apply changes, run before_update/after_update triggers, and persist via subclass hooks."""
+        """Apply changes; run before_update/after_update triggers, persist via subclass."""
         cls = self.__class__
         # only consider really altered attributes
-        old_data = {name: getattr(self, name)
-               for name, value in new_data.items()}
-        new_data = {name: value
-                    for name, value in new_data.items()
-                    if not hasattr(self, name)
-                    or type(value) != type(getattr(self, name))
-                    or value != getattr(self, name)}
+        new_data = {
+            name: value
+            for name, value in new_data.items()
+            if not hasattr(self, name)
+            or type(value) != type(getattr(self, name))
+            or value != getattr(self, name)
+        }
         if not new_data:
             return
         # keep track of old data (for last trigger)
@@ -225,7 +234,7 @@ class SuperModel(BaseModel):
         self.trigger("before_update", new_data=new_data)
         for name, value in new_data.items():
             field_info = cls.model_fields.get(name)
-            if field_info and is_type_annotation(field_info.annotation):
+            if field_info is not None and is_type_annotation(field_info.annotation):
                 # TODO: better validation here
                 self.__dict__[name] = value
             else:
@@ -245,7 +254,12 @@ class SuperModel(BaseModel):
             if not method or method in called_methods:
                 continue
             called_methods.append(method)
-            logger.debug("Calling trigger %s for %s: %s", event_name, self.__class__.__name__, method)
+            logger.debug(
+                "Calling trigger %s for %s: %s",
+                event_name,
+                self.__class__.__name__,
+                method,
+            )
             if method:
                 if method(self, *args, **kwargs) is False:
                     return False
@@ -253,16 +267,12 @@ class SuperModel(BaseModel):
 
     def on_before_create(self, init_data: dict):
         """Override to run logic before a new instance is created; return False to abort."""
-        pass
 
     def on_after_create(self, init_data: dict):
         """Override to run logic after a new instance is created."""
-        pass
 
     def on_before_update(self, new_data: dict):
         """Override to run logic before an instance is updated; return False to abort."""
-        pass
 
     def on_after_update(self, old_data: dict):
         """Override to run logic after an instance is updated."""
-        pass

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import enum
-import types
 import json
 import inspect
 import datetime
@@ -45,7 +44,9 @@ class Field:
     @cache
     def sql_is_json(self) -> bool:
         """True if this field is stored as JSON in the database."""
-        if issubclass(self.base_type, BaseModel) or self.base_type in (list, dict, type) or self.full_type == JSON:
+        if (issubclass(self.base_type, BaseModel)
+                or self.base_type in (list, dict, type)
+                or self.full_type == JSON):
             return True
         return False
 
@@ -76,12 +77,18 @@ class Field:
         return self.base_type
 
     @classmethod
-    def from_pydantic_info(cls, table: type["Table"], name: str, info: PydanticFieldInfo):
+    def from_pydantic_info(cls, table: type["Table"], name: str,
+                           info: PydanticFieldInfo):
         """Build a Field from a Pydantic field info for the given table and name."""
         from .table import Table
         resolved_type = resolve_type(info.annotation)
-        base_type, secondary_types, column_is_required = get_base_type(resolved_type)
-        secondary_types = [secondary_type for secondary_type in secondary_types if secondary_type != type(None)]
+        base_type, secondary_types, column_is_required = get_base_type(
+            resolved_type
+        )
+        none_type = type(None)
+        secondary_types = [
+            st for st in secondary_types if st is not none_type
+        ]
         secondary_types_count = len(set(secondary_types))
         if secondary_types_count == 0:
             secondary_type = None
@@ -95,7 +102,11 @@ class Field:
         default = None if info.default == PydanticUndefined else info.default
         if info.default_factory:
             default = info.default_factory()
-        is_reference = lambda t: inspect.isclass(t) and issubclass(t, Table)
+
+        def _is_reference(t):
+            return inspect.isclass(t) and issubclass(t, Table)
+
+        is_reference = _is_reference(base_type) or _is_reference(secondary_type)
         return cls(table=table,
                    name=name,
                    base_type=base_type,
@@ -104,7 +115,7 @@ class Field:
                    default=default,
                    column_is_required=column_is_required,
                    is_required=column_is_required and info.is_required(),
-                   is_reference=is_reference(base_type) or is_reference(secondary_type))
+                   is_reference=is_reference)
 
     @property
     def sql_creations(self) -> Iterable[str]:
@@ -128,7 +139,7 @@ class Field:
             from .table import Table
             # scalar reference
             if self.secondary_type is None:
-                if self.base_type == Table:
+                if self.base_type is Table:
                     yield f"{self.name}_table TEXT{sql_null}{sql_default}"
                 yield f"{self.name}_id INTEGER{sql_null}{sql_default}"
             # list of references
@@ -154,16 +165,25 @@ class Field:
             type[BaseModel]: "JSON",
             type: "JSON",
         }
-        if inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, enum.Enum):
-            sql = f"{self.column_name} TEXT CHECK({self.column_name} in ('{"', '".join(e.name for e in self.column_base_type)}'))"
-        elif inspect.isclass(self.column_base_type) and issubclass(self.column_base_type, BaseModel):
+        if (inspect.isclass(self.column_base_type)
+                and issubclass(self.column_base_type, enum.Enum)):
+            enum_members = list(self.column_base_type)
+            names = "', '".join(e.name for e in enum_members)
+            check = f"{self.column_name} in ('{names}')"
+            sql = f"{self.column_name} TEXT CHECK({check})"
+        elif (inspect.isclass(self.column_base_type)
+                and issubclass(self.column_base_type, BaseModel)):
             sql = f"{self.column_name} JSON"
         elif self.column_base_type == JSON:
             sql = f"{self.column_name} JSON DEFAULT 'null'"
         elif self.column_base_type in translate_type:
             sql = f"{self.column_name} {translate_type[self.column_base_type]}"
         else:
-            raise TypeError(f"Type `{self.column_base_type}` of `{self.table.__name__}.{self.column_name}` has no known conversion to SQL type")
+            raise TypeError(
+                f"Type `{self.column_base_type}` of "
+                f"`{self.table.__name__}.{self.column_name}` has no known "
+                "conversion to SQL type"
+            )
 
         # final result
         yield sql + sql_null + sql_default
@@ -176,20 +196,16 @@ class Field:
     # conversion
 
     def serialize(self, value: any, for_filtering: bool = False):
-        """Convert a Python value to a database-ready form (e.g. JSON string or ID)."""
-        try:
-            if self.is_reference:
-                if self.secondary_type is None:
-                    return value.id if value else None
-                return [v.id for v in value]
-            if self.base_type == JSON:
-                return json.dumps(value, ensure_ascii=False)
-            if self.base_type == type:
-                return to_json_schema(value)
-            return serialize(value)
-        except Exception as error:
-            raise
-            # raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error.__class__.__name__}({error})")
+        """Convert a Python value to a database-ready form (e.g. JSON or ID)."""
+        if self.is_reference:
+            if self.secondary_type is None:
+                return value.id if value else None
+            return [v.id for v in value]
+        if self.base_type == JSON:
+            return json.dumps(value, ensure_ascii=False)
+        if self.base_type == type:
+            return to_json_schema(value)
+        return serialize(value)
 
     def parse(self, value: any):
         """Convert a database value back to the field's Python type."""
@@ -223,4 +239,7 @@ class Field:
                 return rebuild_pydantic_model(value)
             return from_json_schema(value)
             # raise Exception(value)
-        raise ValueError(f"Cannot parse value `{value}` of type `{type(value)}` for field `{self.name}`")
+        raise ValueError(
+            f"Cannot parse value `{value}` of type `{type(value)}` "
+            f"for field `{self.name}`"
+        )

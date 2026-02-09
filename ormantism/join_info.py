@@ -21,13 +21,16 @@ class JoinInfo(PydanticBaseModel):
     children: dict[str, "JoinInfo"] = PydanticField(default_factory=dict)
 
     def add_children(self, path: list[str]):
-        """Register a preload path (e.g. ['author', 'company']); path segments must be reference fields."""
+        """Register a preload path (e.g. ['author', 'company']); must be refs."""
         name = path[0]
         field = self.model._get_field(name)
         if not field.is_reference:
             raise ValueError(f"Field `{name}` is not a reference (in path `{path}`)")
         if field.reference_type == Table:
-            raise ValueError(f"Generic reference cannot be preloaded: {".".join(path)}")
+            path_str = ".".join(path)
+            raise ValueError(
+                f"Generic reference cannot be preloaded: {path_str}"
+            )
         child = self.children[field.name] = JoinInfo(model=field.reference_type)
         if len(path) > 1:
             child.add_children(path[1:])
@@ -39,9 +42,11 @@ class JoinInfo(PydanticBaseModel):
             yield f"FROM {parent_alias}"
         for name, child in self.children.items():
             alias = f"{parent_alias}{JOIN_SEPARATOR}{name}"
-            yield f"LEFT JOIN {child.model._get_table_name()} AS {alias} ON {alias}.id = {parent_alias}.{name}_id"
+            child_tbl = child.model._get_table_name()
+            on_clause = f"{alias}.id = {parent_alias}.{name}_id"
+            yield f"LEFT JOIN {child_tbl} AS {alias} ON {on_clause}"
             yield from child.get_tables_statements(alias)
-    
+
     def get_columns(self, parent_alias: str = None):
         """Yield (alias, column_expression) pairs for SELECT, including joined children."""
         if not parent_alias:
@@ -51,18 +56,23 @@ class JoinInfo(PydanticBaseModel):
                 # scalar reference
                 if field.secondary_type is None:
                     if field.base_type == Table:
-                        yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_table", f"{parent_alias}.{field.name}_table"
-                    yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_id", f"{parent_alias}.{field.name}_id"
+                        col = f"{parent_alias}.{field.name}_table"
+                        yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_table", col
+                    col_id = f"{parent_alias}.{field.name}_id"
+                    yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_id", col_id
                 # list of references
                 elif issubclass(field.base_type, (list, tuple, set)):
                     if field.secondary_type == Table:
-                        yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_tables", f"{parent_alias}.{field.name}_tables"
-                    yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_ids", f"{parent_alias}.{field.name}_ids"
+                        col_t = f"{parent_alias}.{field.name}_tables"
+                        yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_tables", col_t
+                    col_ids = f"{parent_alias}.{field.name}_ids"
+                    yield f"{parent_alias}{JOIN_SEPARATOR}{field.name}_ids", col_ids
                 # ?
                 else:
                     raise ValueError()
             else:
-                yield f"{parent_alias}{JOIN_SEPARATOR}{field.column_name}", f"{parent_alias}.{field.column_name}"
+                yield (f"{parent_alias}{JOIN_SEPARATOR}{field.column_name}",
+                       f"{parent_alias}.{field.column_name}")
         # preload via join
         for name, child in self.children.items():
             field = self.model._get_field(name)
@@ -72,7 +82,7 @@ class JoinInfo(PydanticBaseModel):
             alias = f"{parent_alias}{JOIN_SEPARATOR}{name}"
             if field.reference_type != Table:
                 yield from child.get_columns(alias)
-    
+
     def get_columns_statements(self):
         """Yield SELECT column fragments (e.g. \"t.id AS t____id\")."""
         for key, value in self.get_columns():
@@ -91,7 +101,7 @@ class JoinInfo(PydanticBaseModel):
                 item = item[p]
             item[path[-1]] = value
         return data
-    
+
     def get_instance(self, row: tuple) -> Table:
         """Build a Table instance from a row, with lazy-loaded references where not preloaded."""
         _lazy_joins = {}
