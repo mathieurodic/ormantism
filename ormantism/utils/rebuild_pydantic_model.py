@@ -64,37 +64,3 @@ def rebuild_pydantic_model(schema: Dict[str, Any], base=BaseModel) -> Type[BaseM
         fields[field_name] = (field_type, field_info.get('default', ...))
 
     return create_model(model_name, **fields, __base__=base)
-
-
-if __name__ == "__main__":
-    # Example usage
-    schema = {
-        "title": "MyModel",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "age": {"type": "integer"},
-            "is_active": {"type": "boolean", "default": True},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
-            "address": {
-                "type": "object",
-                "title": "Address",
-                "properties": {
-                    "street": {"type": "string"},
-                    "city": {"type": "string"}
-                },
-                "required": ["street", "city"]
-            }
-        },
-        "required": ["name", "age", "address"]
-    }
-
-    MyModel = rebuild_pydantic_model(schema)
-
-    from pprint import pprint
-    pprint(MyModel)
-    pprint(MyModel.model_fields)
-    pprint(MyModel.model_fields["address"].annotation.model_fields)

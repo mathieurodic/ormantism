@@ -1,6 +1,36 @@
 import os
+import pytest
 from ormantism.connection import _get_connection
 from ormantism.connection import connect
+
+
+def test_connect_rejects_non_string_non_callable():
+    """connect() raises ValueError when database_url is neither str nor callable."""
+    with pytest.raises(ValueError, match="database_url.*str.*or a method"):
+        connect(123, name="bad")
+    with pytest.raises(ValueError, match="database_url.*str.*or a method"):
+        connect([], name="bad")
+
+
+def test_get_connection_with_callable_url():
+    """_get_connection resolves a callable database_url to a string URL."""
+    os.makedirs("/tmp/ormantism-tests", exist_ok=True)
+    path = "/tmp/ormantism-tests/test-callable.sqlite3"
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    def url_factory():
+        return f"sqlite:///{path}"
+    connect(url_factory, name="callable_db")
+    conn = _get_connection(name="callable_db")
+    conn.execute("CREATE TABLE callable_foo(bar CHAR)")
+    conn.commit()
+    conn.close()
+    conn2 = _get_connection(name="callable_db")
+    count = conn2.execute("SELECT COUNT(*) FROM callable_foo").fetchone()[0]
+    assert count == 0  # new connection, empty table
+    conn2.close()
 
 
 def _setup(*names: tuple[str]):

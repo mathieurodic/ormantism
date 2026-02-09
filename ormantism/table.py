@@ -145,6 +145,13 @@ class Table(metaclass=TableMeta):
         include = set()
         processed_data = self.process_data(init_data)
         formatted_data = {}
+        # Include fields with defaults so they are inserted (and RETURNING matches instance)
+        for name, field in self._get_fields().items():
+            if not field.is_reference and name not in self._READ_ONLY_FIELDS and field.default is not None:
+                include.add(name)
+                # Set default on instance so it matches what we insert (in case model init did not)
+                if name not in processed_data:
+                    object.__setattr__(self, name, field.default)
         # return
         for name, value in processed_data.items():
             # object.__setattr__(self, name, value)
@@ -159,7 +166,12 @@ class Table(metaclass=TableMeta):
                 continue
             if field.is_reference:
                 continue
-            formatted_data[name] = field.serialize(getattr(self, name))
+            # Use field default when user did not pass this field (so INSERT and RETURNING match)
+            if name not in processed_data and field.default is not None:
+                instance_value = field.default
+            else:
+                instance_value = getattr(self, name)
+            formatted_data[name] = field.serialize(instance_value)
 
         # perform insertion
         if formatted_data:
@@ -171,6 +183,10 @@ class Table(metaclass=TableMeta):
         self._execute_returning(sql=sql,
                                 parameters=list(formatted_data.values()),
                                 for_insertion=True)
+        # Re-apply defaults for fields we included from default (in case RETURNING order was wrong)
+        for name, field in self._get_fields().items():
+            if not field.is_reference and name not in self._READ_ONLY_FIELDS and field.default is not None and name not in processed_data:
+                object.__setattr__(self, name, field.default)
         # trigger
         if hasattr(self, "__post_init__"):
             self.__post_init__()
@@ -221,9 +237,12 @@ class Table(metaclass=TableMeta):
         loaded = cls.load(**searched_data)
         if loaded:
             logger.warning(data)
-            changed_data = {key: value
-                            for key, value in data.items()
-                            if getattr(loaded, key) != value}
+            def _changed(key, value):
+                loaded_val = getattr(loaded, key)
+                if value is None or loaded_val is None:
+                    return value is not loaded_val
+                return loaded_val != value
+            changed_data = {key: value for key, value in data.items() if _changed(key, value)}
             changed_data = {}
             for name, value in data.items():
                 field = cls._get_field(name)
@@ -309,11 +328,12 @@ class Table(metaclass=TableMeta):
         return result
     
     def _execute_returning(self, sql: str, parameters: list=[], for_insertion=False):
-        returned_fields = set(self._READ_ONLY_FIELDS)
+        # Use a list so RETURNING column order matches parsed row order
+        returned_fields = list(self._READ_ONLY_FIELDS)
         if for_insertion:
             for name, field in self._get_fields().items():
-                if not field.is_reference and field.default is not None:
-                    returned_fields.add(name)
+                if not field.is_reference and field.default is not None and name not in returned_fields:
+                    returned_fields.append(name)
         if self._READ_ONLY_FIELDS:
             sql += "\nRETURNING " + ", ".join(returned_fields)
         rows = self._execute(sql, list(parameters))
@@ -322,6 +342,8 @@ class Table(metaclass=TableMeta):
         for name, value in zip(returned_fields, rows[0]):
             field = self._get_field(name)
             parsed_value = field.parse(value)
+            if parsed_value is None and field.default is not None:
+                parsed_value = field.default
             object.__setattr__(self, name, parsed_value)
         
     # CREATE TABLE

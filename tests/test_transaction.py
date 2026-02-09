@@ -1,4 +1,21 @@
-from ormantism.transaction import TransactionManager, TransactionError
+import pytest
+from ormantism.transaction import TransactionManager, TransactionError, Transaction
+
+
+def test_transaction_execute_after_exit_raises():
+    """Executing on a transaction after context exit raises TransactionError."""
+    import sqlite3
+    def connect():
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE t (id INT)")
+        return c
+    tm = TransactionManager(connect)
+    with tm.transaction() as t:
+        # Use t as context manager so t.__exit__ is called and _active becomes False
+        with t:
+            pass
+    with pytest.raises(TransactionError, match="no longer active"):
+        t.execute("SELECT 1")
 
 
 def test_transaction():

@@ -39,16 +39,3 @@ def make_hashable(thing: any):
         return thing.__args__
     # other
     raise ValueError(f"Cannot hash `{thing}`, {type(thing)}, {typing.get_origin(thing)}")
-
-if __name__ == "__main__":
-    from pydantic import Field
-
-    class SubTest(BaseModel):
-        bar: dict = {"a": 1, "b": 2, "c": {"d": 4, "e": 5}}
-
-    class Test(BaseModel):
-        foo: int = 42
-        sub: SubTest = Field(default_factory=SubTest)
-
-    test = Test()
-    print(hash(make_hashable(test)))
