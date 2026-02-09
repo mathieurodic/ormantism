@@ -1,3 +1,5 @@
+"""Table model base, metaclass, and mixins for ORM CRUD and schema creation."""
+
 from typing import ClassVar
 import inspect
 import datetime
@@ -18,25 +20,40 @@ logger = logging.getLogger("ormantism")
 
 
 class _WithPrimaryKey(SuperModel):
+    """Mixin that adds an auto-increment integer primary key `id`."""
+
     id: int = None
 
+
 class _WithSoftDelete(SuperModel):
-    deleted_at: datetime.datetime|None = None
+    """Mixin that adds soft delete via `deleted_at` timestamp."""
+
+    deleted_at: datetime.datetime | None = None
+
 
 class _WithCreatedAtTimestamp(SuperModel):
+    """Mixin that adds a `created_at` timestamp set on insert."""
+
     created_at: datetime.datetime = None
 
+
 class _WithUpdatedAtTimestamp(SuperModel):
-    updated_at: datetime.datetime|None = None
+    """Mixin that adds an `updated_at` timestamp updated on save."""
+
+    updated_at: datetime.datetime | None = None
+
 
 class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete, _WithUpdatedAtTimestamp):
     pass
 
 class _WithVersion(_WithSoftDelete):
+    """Mixin that adds a version counter for optimistic locking."""
+
     version: int = 0
 
 
 class TableMeta(ModelMetaclass):
+    """Metaclass for Table: injects mixins from keyword args (with_primary_key, with_timestamps, etc.)."""
 
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool=True,
@@ -88,18 +105,22 @@ class Table(metaclass=TableMeta):
     _CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
 
     def __eq__(self, other: "Table"):
+        """Compare by identity (hash); both must be the same class."""
         if not isinstance(other, self.__class__):
             raise ValueError(f"Comparing instances of different classes: {self.__class__} and {other.__class__}")
         return hash(self) == hash(other)
 
     def __hash__(self):
+        """Hash for equality and use in sets/dicts."""
         return hash(make_hashable(self))
 
     def __deepcopy__(self, memo):
+        """Return self; table instances are treated as immutable for copy purposes."""
         return self
 
     # INSERT
     def on_after_create(self, init_data: dict):
+        """Persist the instance to the database (INSERT) and set generated columns."""
         # if primary key already set: skip entirely
         if self.id is not None and self.id >= 0:
             return
@@ -190,6 +211,7 @@ class Table(metaclass=TableMeta):
     # INSERT or SELECT / UPDATE
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
+        """Load a row matching the given data, or create one; optionally restrict match to _search_fields."""
         # if restriction applies
         if _search_fields is None:
             searched_data = data
@@ -237,11 +259,13 @@ class Table(metaclass=TableMeta):
     @classmethod
     @cache
     def _has_field(cls, name: str) -> bool:
+        """Return True if the table has a field (or column) with the given name."""
         return name in cls.model_fields
 
     @classmethod
     @cache
     def _get_fields(cls) -> dict[str, Field]:
+        """Return a mapping of field name to Field for all model fields."""
         return {
             name: Field.from_pydantic_info(cls, name, info)
             for name, info in cls.model_fields.items()
@@ -250,6 +274,7 @@ class Table(metaclass=TableMeta):
     @classmethod
     @cache
     def _get_field(cls, name: str):
+        """Return the Field for the given name or column name; raises KeyError if missing."""
         fields = cls._get_fields()
         if name in fields:
             return fields[name]
@@ -261,6 +286,7 @@ class Table(metaclass=TableMeta):
     @classmethod
     @cache
     def _get_non_default_fields(cls):
+        """Return fields that are not read-only (e.g. not id, created_at from mixins)."""
         return {
             name: field
             for name, field in cls._get_fields().items()
@@ -270,7 +296,8 @@ class Table(metaclass=TableMeta):
     # execute SQL
     
     @classmethod
-    def _execute(cls, sql: str, parameters: list=[], check=True) -> list[tuple]:
+    def _execute(cls, sql: str, parameters: list = [], check=True) -> list[tuple]:
+        """Run SQL and return fetched rows; optionally ensure table/columns exist first."""
         if check and cls != Table and not cls._CHECKED_TABLE_EXISTENCE:
             cls._create_table()
             cls._add_columns()
@@ -300,7 +327,8 @@ class Table(metaclass=TableMeta):
     # CREATE TABLE
 
     @classmethod
-    def _create_table(cls, created: set[type["Table"]]=set()):
+    def _create_table(cls, created: set[type["Table"]] = set()):
+        """Create the table and referenced tables if they do not exist."""
         # create tables for references first
         created.add(cls)
         for field in cls._get_fields().values():
@@ -334,6 +362,7 @@ class Table(metaclass=TableMeta):
 
     @classmethod
     def _add_columns(cls):
+        """Add any missing columns to the existing table (SQLite ALTER TABLE)."""
         rows = cls._execute(f"SELECT name FROM pragma_table_info('{cls._get_table_name()}')", check=False)
         columns_names = {name for name, in rows}
         new_fields = [field for field in cls._get_fields().values()
@@ -359,7 +388,8 @@ class Table(metaclass=TableMeta):
             raise AttributeError(f"Cannot set read-only attribute{plural} of {self.__class__.__name__}: {", ".join(read_only_fields)}")
 
     @classmethod
-    def process_data(cls, data: dict, for_filtering: bool=False) -> dict:
+    def process_data(cls, data: dict, for_filtering: bool = False) -> dict:
+        """Convert a dict of Python values to DB-ready form (serialize refs, expand refs to _id/_table)."""
         data = dict(**data)
         for name in list(data):
             value = data.pop(name)
@@ -393,6 +423,7 @@ class Table(metaclass=TableMeta):
 
     # DELETE
     def delete(self):
+        """Delete the row (soft delete if _WithSoftDelete, else hard delete)."""
         if isinstance(self, _WithSoftDelete):
             self._execute(f"UPDATE {self._get_table_name()} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", [self.id])
         else:
@@ -400,7 +431,8 @@ class Table(metaclass=TableMeta):
 
     # SELECT
     @classmethod
-    def load(cls, reversed:bool=True, as_collection:bool=False, with_deleted=False, preload:str|list[str]=None, **criteria) -> "Table":
+    def load(cls, reversed: bool = True, as_collection: bool = False, with_deleted=False, preload: str | list[str] = None, **criteria) -> "Table":
+        """Load one or many rows by criteria; supports preload paths and optional soft-delete filtering."""
         original_criteria = criteria
         processed_criteria = cls.process_data(criteria, for_filtering=True)
         if not preload:
@@ -473,16 +505,19 @@ class Table(metaclass=TableMeta):
 
     @classmethod
     def load_all(cls, **criteria) -> list["Table"]:
+        """Load all rows matching the given criteria."""
         return cls.load(as_collection=True, **criteria)
 
     # helper methods
 
     @classmethod
     def _get_table_name(cls) -> str:
+        """Return the database table name (default: lowercased class name)."""
         return cls.__name__.lower()
 
     @classmethod
     def _suspend_validation(cls):
+        """Temporarily replace __init__/__setattr__ so instances can be built without Pydantic validation."""
         def __init__(self, *args, **kwargs):
             self.__dict__.update(**kwargs)
             self.__pydantic_fields_set__ = set(cls.model_fields)
@@ -497,6 +532,7 @@ class Table(metaclass=TableMeta):
     
     @classmethod
     def _resume_validation(cls):
+        """Restore normal __init__/__setattr__ after _suspend_validation."""
         if hasattr(cls, "__init_backup__"):
             cls.__init__ = cls.__init_backup__
             cls.__setattr__ = cls.__setattr_backup__
@@ -505,6 +541,7 @@ class Table(metaclass=TableMeta):
 
     @classmethod
     def _add_lazy_loader(cls, name: str):
+        """Attach a property on the class that loads the reference for `name` on first access."""
         def lazy_loader(self):
             if not name in self.__dict__:
                 model, identifier = self._lazy_joins[name]
@@ -520,6 +557,7 @@ class Table(metaclass=TableMeta):
     
     @classmethod
     def _ensure_lazy_loaders(cls):
+        """Ensure every reference field has a lazy-loading property."""
         if hasattr(cls, "_has_lazy_loaders"):
             return
         for name, field in cls._get_fields().items():

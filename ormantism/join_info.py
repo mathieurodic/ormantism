@@ -1,3 +1,5 @@
+"""Join and preload metadata for building SELECT/JOIN queries and hydrating instances."""
+
 import json
 import logging
 from collections import defaultdict
@@ -13,10 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 class JoinInfo(PydanticBaseModel):
+    """Describes a table and its joined children for SELECT with preload paths."""
+
     model: type
     children: dict[str, "JoinInfo"] = PydanticField(default_factory=dict)
 
     def add_children(self, path: list[str]):
+        """Register a preload path (e.g. ['author', 'company']); path segments must be reference fields."""
         name = path[0]
         field = self.model._get_field(name)
         if not field.is_reference:
@@ -27,7 +32,8 @@ class JoinInfo(PydanticBaseModel):
         if len(path) > 1:
             child.add_children(path[1:])
 
-    def get_tables_statements(self, parent_alias: str=None):
+    def get_tables_statements(self, parent_alias: str = None):
+        """Yield FROM and LEFT JOIN clauses for this model and its children."""
         if not parent_alias:
             parent_alias = self.model._get_table_name()
             yield f"FROM {parent_alias}"
@@ -36,7 +42,8 @@ class JoinInfo(PydanticBaseModel):
             yield f"LEFT JOIN {child.model._get_table_name()} AS {alias} ON {alias}.id = {parent_alias}.{name}_id"
             yield from child.get_tables_statements(alias)
     
-    def get_columns(self, parent_alias: str=None):
+    def get_columns(self, parent_alias: str = None):
+        """Yield (alias, column_expression) pairs for SELECT, including joined children."""
         if not parent_alias:
             parent_alias = self.model._get_table_name()
         for field in self.model._get_fields().values():
@@ -67,10 +74,12 @@ class JoinInfo(PydanticBaseModel):
                 yield from child.get_columns(alias)
     
     def get_columns_statements(self):
+        """Yield SELECT column fragments (e.g. \"t.id AS t____id\")."""
         for key, value in self.get_columns():
             yield f"{value} AS {key}"
 
     def get_data(self, row: tuple):
+        """Turn a flat row tuple into a nested dict keyed by join path."""
         # fill with data
         def infinite_defaultdict():
             return defaultdict(infinite_defaultdict)
@@ -84,7 +93,7 @@ class JoinInfo(PydanticBaseModel):
         return data
     
     def get_instance(self, row: tuple) -> Table:
-
+        """Build a Table instance from a row, with lazy-loaded references where not preloaded."""
         _lazy_joins = {}
 
         def _get_instance_recursive(data: dict, info: JoinInfo):

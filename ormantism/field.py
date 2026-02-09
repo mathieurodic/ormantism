@@ -1,3 +1,5 @@
+"""Field metadata and SQL/serialization helpers for table columns."""
+
 from __future__ import annotations
 import enum
 import types
@@ -27,6 +29,8 @@ JSON = Any
 
 @dataclass
 class Field:
+    """Metadata for a single table column: types, defaults, and reference info."""
+
     table: type["Table"]
     name: str
     base_type: type
@@ -40,6 +44,7 @@ class Field:
     @property
     @cache
     def sql_is_json(self) -> bool:
+        """True if this field is stored as JSON in the database."""
         if issubclass(self.base_type, BaseModel) or self.base_type in (list, dict, type) or self.full_type == JSON:
             return True
         return False
@@ -47,6 +52,7 @@ class Field:
     @property
     @cache
     def reference_type(self) -> type:
+        """The referenced Table type for reference fields; None otherwise."""
         if not self.is_reference:
             return None
         if self.secondary_type is None:
@@ -56,6 +62,7 @@ class Field:
     @property
     @cache
     def column_name(self):
+        """Database column name (e.g. name_id for references)."""
         if self.is_reference:
             return f"{self.name}_id"
         return self.name
@@ -63,12 +70,14 @@ class Field:
     @property
     @cache
     def column_base_type(self):
+        """Python type used for the stored column (e.g. int for reference IDs)."""
         if self.is_reference:
             return int
         return self.base_type
 
     @classmethod
     def from_pydantic_info(cls, table: type["Table"], name: str, info: PydanticFieldInfo):
+        """Build a Field from a Pydantic field info for the given table and name."""
         from .table import Table
         resolved_type = resolve_type(info.annotation)
         base_type, secondary_types, column_is_required = get_base_type(resolved_type)
@@ -99,7 +108,7 @@ class Field:
 
     @property
     def sql_creations(self) -> Iterable[str]:
-
+        """Yield SQL column definition fragments (e.g. \"name TEXT NOT NULL\")."""
         # null, default
         sql_null = " NOT NULL" if self.column_is_required else ""
         if self.default is not None:
@@ -161,11 +170,13 @@ class Field:
 
 
     def __hash__(self):
+        """Hash for use in sets and as dict keys."""
         return hash(make_hashable(tuple(asdict(self).items())))
 
     # conversion
 
-    def serialize(self, value: any, for_filtering: bool=False):
+    def serialize(self, value: any, for_filtering: bool = False):
+        """Convert a Python value to a database-ready form (e.g. JSON string or ID)."""
         try:
             if self.is_reference:
                 if self.secondary_type is None:
@@ -181,6 +192,7 @@ class Field:
             # raise ValueError(f"Cannot serialize value `{value}` of type `{type(value)}` for field `{self.name}`: {error.__class__.__name__}({error})")
 
     def parse(self, value: any):
+        """Convert a database value back to the field's Python type."""
         if value is None:
             return None
         if issubclass(self.base_type, enum.Enum):

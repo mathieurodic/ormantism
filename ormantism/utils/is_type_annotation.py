@@ -1,6 +1,10 @@
+"""Detect whether a value is a type annotation (for serialization and validation)."""
+
 from typing import get_origin, get_args, Union
 
+
 def is_type_annotation(annotation) -> bool:
+    """Return True if annotation is a type or generic type (e.g. list[int], Union)."""
     origin = get_origin(annotation)
     args = get_args(annotation)
 

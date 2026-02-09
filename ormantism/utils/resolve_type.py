@@ -1,9 +1,11 @@
+"""Resolve forward references to Table classes by name."""
+
 from typing import ForwardRef
 from .get_table_by_name import get_table_by_name
 
 
 def resolve_type(reference_type: type):
-    """Resolve forward reference"""
+    """Resolve a ForwardRef to a concrete type (e.g. Table subclass by name)."""
     if not isinstance(reference_type, ForwardRef):
         return reference_type
     if reference_type.__forward_evaluated__:

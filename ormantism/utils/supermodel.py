@@ -1,3 +1,5 @@
+"""Base model with lifecycle triggers, type-field support, and JSON-safe model_dump."""
+
 import logging
 import types
 import typing
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def to_json_schema(T: type) -> dict:
+    """Return a JSON Schema dict for the given type (e.g. for type fields)."""
     wrapper = create_model("Wrapper", wrapped=T)
     wrapper_schema = wrapper.model_json_schema()
     schema = wrapper_schema["properties"]["wrapped"]
@@ -95,8 +98,10 @@ def from_json_schema(schema: dict, root_schema: dict=None) -> type:
 
 
 class SuperModel(BaseModel):
+    """Pydantic BaseModel with before/after create/update triggers and type-field serialization."""
 
     def __init_subclass__(cls, **kwargs):
+        """Replace bare `type` annotations with type | GenericAlias for validation."""
         # Transform type annotations before the class is fully created
         if hasattr(cls, '__annotations__'):
             new_annotations = {}
@@ -114,6 +119,7 @@ class SuperModel(BaseModel):
     # instanciation
 
     def __init__(self, /, **data: any) -> None:
+        """Initialize from keyword data; run before_create/after_create triggers and validate."""
         # for triggers
         init_data = copy(data)
         if not self.trigger("before_create", data):
@@ -147,11 +153,11 @@ class SuperModel(BaseModel):
     
     # serialization
         
-    def model_dump(self, *, mode: str = 'python', include=None, exclude=None, 
-                   by_alias: bool = False, exclude_unset: bool = False, 
+    def model_dump(self, *, mode: str = 'python', include=None, exclude=None,
+                   by_alias: bool = False, exclude_unset: bool = False,
                    exclude_defaults: bool = False, exclude_none: bool = False,
                    round_trip: bool = False, warnings: bool = True) -> dict[str, any]:
-        
+        """Dump to dict; in \"json\" mode, type fields are serialized as JSON Schema."""
         if exclude:
             exclude = copy(exclude)
         else:
@@ -194,12 +200,14 @@ class SuperModel(BaseModel):
     # modification
 
     def __setattr__(self, name, value):
+        """Non-underscore attributes are delegated to update() for trigger support."""
         if name.startswith("_"):
             return BaseModel.__setattr__(self, name, value)
         self.update(**{name: value})
         return getattr(self, name)
 
     def update(self, **new_data):
+        """Apply changes, run before_update/after_update triggers, and persist via subclass hooks."""
         cls = self.__class__
         # only consider really altered attributes
         old_data = {name: getattr(self, name)
@@ -227,6 +235,7 @@ class SuperModel(BaseModel):
     # triggers
 
     def trigger(self, event_name: str, *args, **kwargs):
+        """Call on_<event_name> on self and subclasses in MRO order; return False to abort."""
         method_name = f"on_{event_name}"
         called_methods = [getattr(SuperModel, method_name)]
         for cls in type(self).__mro__:
@@ -243,15 +252,19 @@ class SuperModel(BaseModel):
         return True
 
     def on_before_create(self, init_data: dict):
+        """Override to run logic before a new instance is created; return False to abort."""
         pass
 
     def on_after_create(self, init_data: dict):
+        """Override to run logic after a new instance is created."""
         pass
-    
+
     def on_before_update(self, new_data: dict):
+        """Override to run logic before an instance is updated; return False to abort."""
         pass
 
     def on_after_update(self, old_data: dict):
+        """Override to run logic after an instance is updated."""
         pass
 
 

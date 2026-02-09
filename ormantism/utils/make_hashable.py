@@ -1,3 +1,5 @@
+"""Convert objects (including Pydantic models) to hashable, comparable form for hashing."""
+
 import inspect
 import typing
 import enum
@@ -6,6 +8,7 @@ from pydantic import BaseModel
 
 
 def make_hashable(thing: any):
+    """Return a hashable representation of thing (e.g. for use in hash() or as dict key)."""
     # enums
     if isinstance(thing, enum.Enum):
         return (thing.name, thing.value)

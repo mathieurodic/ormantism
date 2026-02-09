@@ -1,3 +1,5 @@
+"""Database connection configuration and factory for MySQL, SQLite, and PostgreSQL."""
+
 import logging
 import inspect
 import urllib
@@ -30,6 +32,7 @@ def connect(database_url: str, name: str=None):
 
 
 def _get_connection(name=None):
+    """Return a live database connection for the given name (thread-local where applicable)."""
     try:
         url = _urls[name]
     except KeyError as error:

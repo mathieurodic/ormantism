@@ -1,3 +1,5 @@
+"""Transaction context and manager with savepoint support for nested transactions."""
+
 import json
 import threading
 import logging
@@ -14,6 +16,7 @@ class TransactionError(Exception):
 
 
 class TransactionManager:
+    """Manages per-thread connections and nested transaction levels (savepoints)."""
 
     def __init__(self, connection_factory: callable):
         """
@@ -40,17 +43,17 @@ class TransactionManager:
         return getattr(self._local, 'transaction_level', 0)
     
     def _set_transaction_level(self, level):
-        """Set current transaction nesting level"""
+        """Set current transaction nesting level."""
         self._local.transaction_level = level
-    
+
     def _increment_transaction_level(self):
-        """Increment transaction nesting level"""
+        """Increment transaction nesting level and return the new level."""
         level = self._get_transaction_level()
         self._set_transaction_level(level + 1)
         return level + 1
     
     def _decrement_transaction_level(self):
-        """Decrement transaction nesting level"""
+        """Decrement transaction nesting level and return the new level."""
         level = self._get_transaction_level()
         new_level = max(0, level - 1)
         self._set_transaction_level(new_level)
@@ -108,8 +111,10 @@ class TransactionManager:
 
 
 class Transaction:
+    """Handle for executing SQL within a single transaction (or savepoint)."""
 
     def __init__(self, connection, manager, level):
+        """Create a transaction handle for the given connection and nesting level."""
         self._connection = connection
         self._manager = manager
         self._level = level
@@ -150,15 +155,18 @@ class Transaction:
         return self._connection.execute(sql, parameters)
     
     def __enter__(self):
+        """Context manager entry; returns self."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Mark the transaction as inactive on exit."""
         self._active = False
 
 
 _transaction_managers: dict[str, TransactionManager] = {}
 
-def transaction(connection_name: str="default"):
+def transaction(connection_name: str = "default"):
+    """Return a context manager for a transaction on the named connection (default: \"default\")."""
     if connection_name not in _transaction_managers:
         def connection_factory_builder(name):
             return lambda : _get_connection(name=name)

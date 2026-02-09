@@ -1,3 +1,5 @@
+"""Recursive serialization of nested structures to JSON-serializable types."""
+
 from enum import Enum
 from datetime import datetime
 from pydantic import BaseModel

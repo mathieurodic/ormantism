@@ -1,3 +1,5 @@
+"""Extract base and container types from annotations (unions, generics)."""
+
 from typing import Union, get_origin, get_args
 from types import UnionType, GenericAlias
 

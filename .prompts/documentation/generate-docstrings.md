@@ -1,0 +1,1 @@
+For every Python script in the `ormantism` directory, please ensure every module, class and method has an adequate docstring.
