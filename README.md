@@ -23,6 +23,19 @@ Offers support for PostgreSQL, MySQL, SQLite (database URL syntax is the same as
 pip install ormantism
 ```
 
+SQLite works out of the box. For MySQL or PostgreSQL, install the corresponding optional dependency:
+
+```bash
+# MySQL
+pip install ormantism[mysql]
+
+# PostgreSQL
+pip install ormantism[postgresql]
+
+# Both
+pip install ormantism[mysql,postgresql]
+```
+
 ## Quick Start
 
 ### 1. Connect to Database
@@ -326,10 +339,15 @@ For a full **code reference** of the library (all classes and methods with defin
 - **No Migrations**: New columns are added automatically when the model gains fields; dropping or renaming columns, or changing column types, requires manual handling
 - **Basic Relationships**: Only supports simple foreign key relationships
 
+See **[TODO.md](TODO.md)** for planned improvements and contribution ideas.
+
 ## Requirements
 
 - Python 3.12+
 - Pydantic
+- For MySQL: install with `pip install ormantism[mysql]` (uses `pymysql`)
+- For PostgreSQL: install with `pip install ormantism[postgresql]` (uses `psycopg2`)
+- SQLite is supported with no extra dependencies
 
 ## License
 
@@ -337,4 +355,4 @@ MIT License
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request. For possible improvements and known TODOs, see **[TODO.md](TODO.md)** at the root of the project.
