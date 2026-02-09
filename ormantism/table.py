@@ -100,6 +100,7 @@ class TableMeta(ModelMetaclass):
 
 # class Table(SuperModel, metaclass=BaseMeta):
 class Table(metaclass=TableMeta):
+    """Base class for ORM table models; provides DB operations and identity semantics."""
 
     model_config = {"arbitrary_types_allowed": True}
     _CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False

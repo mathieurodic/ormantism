@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 _urls: dict[str, str] = {}
-def connect(database_url: str, name: str=None):
+
+
+def connect(database_url: str, name: str = None):
+    """Register a database URL for the default or named connection and log it."""
     _urls[name] = database_url
 
     # build representation for database URL

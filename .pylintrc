@@ -85,9 +85,6 @@ disable=
     use-implicit-booleaness-not-comparison-to-zero,
     use-symbolic-message-instead,
     fixme,
-    missing-module-docstring,
-    missing-class-docstring,
-    missing-function-docstring
 
 enable=
 
