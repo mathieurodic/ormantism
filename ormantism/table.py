@@ -1,104 +1,30 @@
-"""Table model base, metaclass, and mixins for ORM CRUD and schema creation."""
+"""Table model base for ORM CRUD and schema creation."""
 
 from typing import ClassVar
 import inspect
-import datetime
 import logging
 import sqlite3
 from functools import cache
 
 from pydantic import BaseModel
-from pydantic._internal._model_construction import ModelMetaclass
 
-from .utils.supermodel import SuperModel
 from .utils.make_hashable import make_hashable
 from .transaction import transaction
 from .field import Field
+from .table_meta import TableMeta
+from .table_mixins import (
+    _WithPrimaryKey,
+    _WithSoftDelete,
+    _WithCreatedAtTimestamp,
+    _WithUpdatedAtTimestamp,
+    _WithTimestamps,
+    _WithVersion,
+)
 
 
 logger = logging.getLogger("ormantism")
 
 
-class _WithPrimaryKey(SuperModel):
-    """Mixin that adds an auto-increment integer primary key `id`."""
-
-    id: int = None
-
-
-class _WithSoftDelete(SuperModel):
-    """Mixin that adds soft delete via `deleted_at` timestamp."""
-
-    deleted_at: datetime.datetime | None = None
-
-
-class _WithCreatedAtTimestamp(SuperModel):
-    """Mixin that adds a `created_at` timestamp set on insert."""
-
-    created_at: datetime.datetime = None
-
-
-class _WithUpdatedAtTimestamp(SuperModel):
-    """Mixin that adds an `updated_at` timestamp updated on save."""
-
-    updated_at: datetime.datetime | None = None
-
-
-class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete, _WithUpdatedAtTimestamp):
-    pass
-
-class _WithVersion(_WithSoftDelete):
-    """Mixin that adds a version counter for optimistic locking."""
-
-    version: int = 0
-
-
-class TableMeta(ModelMetaclass):
-    """Metaclass for Table: injects mixins (with_primary_key, with_timestamps)."""
-
-    def __new__(mcs, name, bases, namespace,
-                with_primary_key: bool = True,
-                with_created_at_timestamp: bool = False,
-                with_updated_at_timestamp: bool = False,
-                with_timestamps: bool = False,
-                versioning_along: tuple[str] = None,
-                connection_name: str = None,
-                **kwargs):
-        # inherited behaviors
-        default_bases: tuple[type[SuperModel]] = tuple()
-        if with_primary_key:
-            default_bases += (_WithPrimaryKey,)
-        if with_updated_at_timestamp:
-            default_bases += (_WithUpdatedAtTimestamp,)
-        if with_created_at_timestamp:
-            default_bases += (_WithCreatedAtTimestamp,)
-        if with_timestamps:
-            default_bases += (_WithTimestamps,)
-        if versioning_along:
-            default_bases += (_WithVersion,)
-        # start building result
-        result = super().__new__(
-            mcs, name, bases + default_bases, namespace, **kwargs
-        )
-        # connection name
-        if not connection_name:
-            for base in bases:
-                if base._CONNECTION_NAME:
-                    connection_name = base._CONNECTION_NAME
-        result._CONNECTION_NAME = connection_name
-        # versioning
-        if versioning_along is None:
-            for base in bases:
-                if getattr(base, "_VERSIONING_ALONG", None):
-                    versioning_along = base._VERSIONING_ALONG
-        result._VERSIONING_ALONG = versioning_along
-        # read-only
-        result._READ_ONLY_FIELDS = sum((tuple(base.model_fields.keys())
-                                        for base in default_bases), start=())
-        # here we go :)
-        return result
-
-
-# class Table(SuperModel, metaclass=BaseMeta):
 class Table(metaclass=TableMeta):
     """Base class for ORM table models; provides DB operations and identity semantics."""
 
@@ -646,3 +572,16 @@ class Table(metaclass=TableMeta):
             if field.is_reference:
                 cls._add_lazy_loader(name)
         cls._has_lazy_loaders = True
+
+
+# Re-export so existing imports from ormantism.table still work
+__all__ = [
+    "Table",
+    "TableMeta",
+    "_WithPrimaryKey",
+    "_WithSoftDelete",
+    "_WithCreatedAtTimestamp",
+    "_WithUpdatedAtTimestamp",
+    "_WithTimestamps",
+    "_WithVersion",
+]
