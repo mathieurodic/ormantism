@@ -10,9 +10,8 @@ from ormantism.query import (
 
 
 def _pk(inst: Table):
-    """Return the instance's stored primary key (from __dict__); never return an Expression."""
-    from ormantism.query import _stored_pk
-    return _stored_pk(inst)
+    """Return the instance's stored primary key."""
+    return inst.id
 
 
 class TestEnsureTableStructure:
@@ -897,6 +896,21 @@ class TestRunSqlAndEnsureStructureCoverage:
         assert row.id == 1
         assert row.name == "one"
 
+    def test_partial_hydration_lazy_loads_readonly_fields(self, setup_db):
+        """When SELECT omits read-only fields, accessing them triggers lazy fetch."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        assert a.id is not None
+        # Select only id, name (omit created_at, updated_at)
+        loaded = Query(table=A).select("id", "name").where(id=a.id).first()
+        assert loaded is not None
+        assert loaded.id == a.id
+        assert loaded.name == "x"
+        # created_at was not in SELECT; lazy fetch on access
+        assert loaded.created_at is not None
+
 
 class TestVersionedTableDefaultOrder:
     """Default ORDER BY for _WithVersion tables (covers sql_order versioning branch)."""
@@ -1456,38 +1470,7 @@ class TestPolymorphicListRefHydration:
 
 
 class TestQueryCoverageHelpers:
-    """Targeted tests for query.py branches: _stored_pk, _pk_name, _sql_from_join, insert defaults, list ref no ids."""
-
-    def test_stored_pk_returns_none_when_id_missing_or_expression(self, setup_db):
-        """_stored_pk returns None when instance.id is not in __dict__ or is an Expression (line 201)."""
-        from ormantism.query import _stored_pk
-
-        class A(Table, with_timestamps=True):
-            name: str = ""
-
-        a = A(name="x")
-        assert a.id is not None
-        assert _stored_pk(a) == a.id
-
-        empty = A.__new__(A)
-        empty.__dict__.clear()
-        assert _stored_pk(empty) is None
-
-    def test_pk_name_returns_id_when_no_read_only_fields(self, setup_db):
-        """_pk_name returns 'id' when table has no _READ_ONLY_FIELDS or it is empty (line 321)."""
-        from ormantism.query import _pk_name
-
-        class A(Table, with_timestamps=True):
-            name: str = ""
-
-        assert _pk_name(A) == "id"
-        orig = getattr(A, "_READ_ONLY_FIELDS", None)
-        try:
-            A._READ_ONLY_FIELDS = ()
-            assert _pk_name(A) == "id"
-        finally:
-            if orig is not None:
-                A._READ_ONLY_FIELDS = orig
+    """Targeted tests for query.py branches: _sql_from_join, insert defaults, list ref no ids."""
 
     def test_sql_from_join_empty_returns_empty_string(self):
         """_sql_from_join([]) returns '' (line 426)."""

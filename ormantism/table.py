@@ -40,6 +40,9 @@ class Table(metaclass=TableMeta):
 
     def __hash__(self):
         """Hash for equality and use in sets/dicts."""
+        # Ensure lazy read-only fields are loaded so hash is consistent
+        for name in getattr(self, "_lazy_readonly", set()):
+            getattr(self, name)
         return hash(make_hashable(self))
 
     def __deepcopy__(self, memo):
@@ -265,12 +268,12 @@ class Table(metaclass=TableMeta):
             stacklevel=2,
         )
         from .expressions import ColumnExpression
-        from .query import Query, _pk_name, _stored_pk
+        from .query import Query
         preload_list = [preload] if isinstance(preload, str) else (preload or [])
         root = cls._root_expression()
         q = Query(table=cls)
         if preload_list:
-            select_exprs = [root.get_column_expression(_pk_name(cls))]
+            select_exprs = [root.get_column_expression("id")]
             for p in preload_list:
                 e = q._resolve_user_path(p)
                 if e is not None:
@@ -284,7 +287,7 @@ class Table(metaclass=TableMeta):
                 field = cls._get_field(k)
                 if field.is_reference and field.secondary_type is None:
                     col = root.get_column_expression(field.column_name)
-                    val = _stored_pk(v) if (hasattr(v, "_get_table_name") and not isinstance(v, type)) else v
+                    val = v.id if (hasattr(v, "_get_table_name") and not isinstance(v, type)) else v
                     stmts.append(col == val)
                     # Generic ref (Table): also filter by _table so ref_id alone doesn't match another table's row
                     if field.base_type is Table and v is not None and hasattr(v, "_get_table_name") and not isinstance(v, type):
@@ -300,7 +303,7 @@ class Table(metaclass=TableMeta):
                 along = list(getattr(cls, "_VERSIONING_ALONG", ())) + ["version"]
                 q = q.order_by(*[root.get_column_expression(a) for a in along])
             else:
-                q = q.order_by(root.get_column_expression(_pk_name(cls)))
+                q = q.order_by(root.get_column_expression("id"))
         if as_collection:
             return q.all()
         return q.first()
@@ -386,7 +389,59 @@ class Table(metaclass=TableMeta):
         for name, field in cls._get_fields().items():
             if field.is_reference:
                 cls._add_lazy_loader(name)
+        cls._ensure_lazy_readonly_loaders()
         cls._has_lazy_loaders = True
+
+    @classmethod
+    def _add_lazy_readonly_loader(cls, name: str):
+        """Attach a property that fetches a read-only scalar field on first access."""
+        def lazy_loader(self):
+            if name not in self.__dict__:
+                pk = getattr(self, "id", None)
+                if pk is None:
+                    return None
+                from .query import Query
+                field = cls._get_field(name)
+                tbl = cls._get_table_name()
+                col = field.column_name
+                rows = Query(table=cls).execute(
+                    f"SELECT {col} FROM {tbl} WHERE id = ?",
+                    (pk,),
+                    ensure_structure=False,
+                )
+                value = rows[0][0] if rows else None
+                parsed = field.parse(value)
+                if parsed is None and field.default is not None:
+                    parsed = field.default
+                self.__dict__[name] = parsed
+            return self.__dict__[name]
+        setattr(cls, name, property(lazy_loader))
+
+    @classmethod
+    def _ensure_lazy_readonly_loaders(cls):
+        """Ensure every read-only scalar field (except id) has a lazy-loading property."""
+        if hasattr(cls, "_has_lazy_readonly_loaders"):
+            return
+        for name in getattr(cls, "_READ_ONLY_FIELDS", ()):
+            if name == "id":
+                continue
+            if name in cls._get_fields():
+                cls._add_lazy_readonly_loader(name)
+        cls._has_lazy_readonly_loaders = True
+
+    @classmethod
+    def _mark_readonly_lazy(cls, instance: "Table") -> None:
+        """Mark read-only fields (except id) as lazy; values will fetch on first access."""
+        cls._ensure_lazy_readonly_loaders()
+        lazy_names = {
+            n for n in getattr(cls, "_READ_ONLY_FIELDS", ())
+            if n != "id" and n in cls._get_fields()
+        }
+        if not lazy_names:
+            return
+        instance._lazy_readonly = getattr(instance, "_lazy_readonly", set()) | lazy_names
+        for name in lazy_names:
+            instance.__dict__.pop(name, None)
 
 
 # Re-export so existing imports from ormantism.table still work

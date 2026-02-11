@@ -36,16 +36,23 @@ def expect_lazy_loads(recwarn):
 
 @pytest.fixture(scope="function")
 def setup_db(request):
-    """Setup a temporary file SQLite database for each test."""
-    path = (
-        f"/tmp/ormantism-tests/test-{request.function.__module__}"
-        f"-{request.function.__name__}.sqlite3"
-    )
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-    connection_url = f"sqlite:///{path}"
+    """Setup a temporary SQLite database for each test.
+
+    Uses an in-memory database by default. Set ORMANTISM_DB_FILE to use
+    a file database (e.g. for debugging).
+    """
+    if os.environ.get("ORMANTISM_DB_FILE"):
+        path = (
+            f"/tmp/ormantism-tests/test-{request.function.__module__}"
+            f"-{request.function.__name__}.sqlite3"
+        )
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        connection_url = f"sqlite:///{path}"
+    else:
+        connection_url = "sqlite:///:memory:"
     connect(connection_url)
     _transaction_managers.clear()
     yield

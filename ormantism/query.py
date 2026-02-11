@@ -140,61 +140,47 @@ def apply_returning(
 ) -> None:
     """Execute SQL with RETURNING and set parsed values on the instance.
 
-    Appends RETURNING clause for instance._READ_ONLY_FIELDS (and optionally
-    default columns when for_insertion=True), runs the SQL, and sets the
-    returned values on the instance.
+    For INSERT: returns id (required) plus non-read-only fields with defaults
+    (for applying default when DB returns null). Other read-only fields become
+    lazy and fetch on first access.
     """
     if parameters is None:
         parameters = []
     cls = instance.__class__
-    returned_fields = list(instance._READ_ONLY_FIELDS)
+    returned_fields = ["id"] if for_insertion else []
     if for_insertion:
         for name, field in cls._get_fields().items():
             if (
                 not field.is_reference
                 and field.default is not None
+                and name not in cls._READ_ONLY_FIELDS
                 and name not in returned_fields
             ):
                 returned_fields.append(name)
     if returned_fields:
         sql += "\nRETURNING " + ", ".join(returned_fields)
-    rows = Query(table=cls).execute(sql, list(parameters), ensure_structure=True)
-    for name, value in zip(returned_fields, rows[0]):
-        field = cls._get_field(name)
-        parsed_value = field.parse(value)
-        if parsed_value is None and field.default is not None:
-            parsed_value = field.default
-        object.__setattr__(instance, name, parsed_value)
-
-
-def _stored_pk(instance: Table) -> Optional[Any]:
-    """Return the instance's stored primary key (from __dict__); avoids class-level Expression."""
-    v = instance.__dict__.get("id")
-    if v is not None and not isinstance(v, Expression):
-        return v
-    return None
+        rows = Query(table=cls).execute(sql, list(parameters), ensure_structure=True)
+        for name, value in zip(returned_fields, rows[0]):
+            field = cls._get_field(name)
+            parsed_value = field.parse(value)
+            if parsed_value is None and field.default is not None:
+                parsed_value = field.default
+            object.__setattr__(instance, name, parsed_value)
+        if for_insertion:
+            cls._mark_readonly_lazy(instance)
 
 
 def update_instance(instance: Table, new_data: dict) -> None:
-    """Apply changes to the database (UPDATE) and set returned columns on the instance."""
+    """Apply changes to the database (UPDATE). Read-only fields become lazy and fetch on access."""
     instance.check_read_only(new_data)
     cls = instance.__class__
-    set_statement = cls.process_data(new_data)
-    if not set_statement:
-        return
-    if isinstance(instance, _WithPrimaryKey):
-        where_statement = {"id": instance.id}
-    else:
-        raise NotImplementedError()
-    tbl = cls._get_table_name()
-    sql = f"UPDATE {tbl}\nSET " + ", ".join(f"{k} = ?" for k in set_statement)
-    if isinstance(instance, _WithUpdatedAtTimestamp):
-        sql += ", updated_at = CURRENT_TIMESTAMP"
-    sql += "\nWHERE " + " AND ".join(f"{k} = ?" for k in where_statement)
-    parameters = tuple(
-        value for statement in (set_statement, where_statement) for value in statement.values()
-    )
-    apply_returning(instance, sql, parameters, for_insertion=False)
+    if not isinstance(instance, _WithPrimaryKey):
+        raise NotImplementedError("Update requires a primary key")
+    pk = getattr(instance, "id", None)
+    if pk is None:
+        raise NotImplementedError("Update requires instance.id to be set")
+    Query(table=cls).where(id=pk).update(**new_data)
+    cls._mark_readonly_lazy(instance)
 
 
 def delete_instance(instance: Table) -> None:
@@ -209,15 +195,6 @@ def delete_instance(instance: Table) -> None:
         )
     else:
         Query(table=cls).execute(f"DELETE FROM {tbl} WHERE id = ?", [instance.id], ensure_structure=True)
-
-
-def _pk_name(table: type[Table]) -> str:
-    """Return the primary key column name for the table (e.g. 'id')."""
-    if getattr(table, "_READ_ONLY_FIELDS", None):
-        # First read-only field is typically the PK (e.g. id)
-        for name in table._READ_ONLY_FIELDS:
-            return name
-    return "id"
 
 
 def _column_name_for_path(model: type[Table], path: list[str]) -> str:
@@ -239,8 +216,7 @@ def _to_order_expression(table: type[Table], order: OrderExpression | ColumnExpr
     if isinstance(order, ColumnExpression):
         return OrderExpression(column_expression=order, desc=False)
     if isinstance(order, TableExpression):
-        pk = _pk_name(table)
-        return OrderExpression(column_expression=order.get_column_expression(pk), desc=False)
+        return OrderExpression(column_expression=order.get_column_expression("id"), desc=False)
     raise TypeError(f"order_by requires OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
 
 
@@ -501,7 +477,7 @@ class Query(BaseModel):
         """Set select/preload. Pass the table class for all fields (e.g. User), path strings (e.g. 'name', 'books.title'), or column/table expressions (e.g. User.id, User.books.title)."""
         if not columns:
             root = self.table._root_expression()
-            columns = (root.get_column_expression(_pk_name(self.table)),)
+            columns = (root.get_column_expression("id"),)
         normalized = []
         for c in columns:
             if isinstance(c, type) and issubclass(c, Table):
@@ -557,7 +533,7 @@ class Query(BaseModel):
             elif isinstance(order, ColumnExpression):
                 order_by_expressions.append(OrderExpression(column_expression=order, desc=False))
             elif isinstance(order, TableExpression):
-                order_by_expressions.append(OrderExpression(column_expression=order.get_column_expression(_pk_name(self.table)), desc=False))
+                order_by_expressions.append(OrderExpression(column_expression=order.get_column_expression("id"), desc=False))
             else:
                 raise TypeError(f"order_by requires table class, OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
         return self.clone_query_with(order_by_expressions=order_by_expressions)
@@ -595,7 +571,7 @@ class Query(BaseModel):
             if issubclass(self.table, _WithVersion):
                 along = getattr(self.table, "_VERSIONING_ALONG", ())
                 return ", ".join(f"{tbl}.{a}" for a in along) + f", {tbl}.version DESC"
-            return f"{tbl}.{_pk_name(self.table)} DESC"
+            return f"{tbl}.id DESC"
         return ", ".join(o.sql for o in self.order_by_expressions)
 
     @property
@@ -705,6 +681,7 @@ class Query(BaseModel):
             - Ensures lazy loaders for unresolved relationships; no premature loading.
         """
         _lazy_joins: dict[str, Any] = {}  # For unresolved refs, track what to lazy-load later
+        _lazy_readonly: set[str] = set()   # Read-only scalars not fetched; will lazy-load on access
 
         # Iterate through each field of the Table model
         for name, field in model._get_fields().items():
@@ -777,8 +754,16 @@ class Query(BaseModel):
                 else:
                     raise ValueError("Unexpected reference type in _instance_from_data")
             else:
-                # Normal (non-reference) field: parse value as appropriate
-                data[name] = field.parse(data.get(name))
+                # Normal (non-reference) field
+                if (
+                    name in getattr(model, "_READ_ONLY_FIELDS", ())
+                    and name != "id"
+                    and name not in data
+                ):
+                    # Read-only field not fetched: will lazy-load on access
+                    _lazy_readonly.add(name)
+                else:
+                    data[name] = field.parse(data.get(name))
 
         model._ensure_lazy_loaders()        # Ensure property accessors for lazy refs
         model._suspend_validation()         # Avoid validation until instance built
@@ -786,6 +771,7 @@ class Query(BaseModel):
         instance = model(**data)            # Hydrate a Table instance
         instance.__dict__.update(data)      # Attach all data for non-pydantic usage
         instance._lazy_joins = _lazy_joins  # Save what still needs to be lazy-loaded
+        instance._lazy_readonly = _lazy_readonly
 
         # Remove placeholders for unresolved refs so property can fetch on access
         for name in _lazy_joins:
@@ -793,6 +779,9 @@ class Query(BaseModel):
                 val = instance.__dict__[name]
                 if val is None or val == []:
                     del instance.__dict__[name]
+
+        for name in _lazy_readonly:
+            instance.__dict__.pop(name, None)
 
         model._resume_validation()          # Turn validation back on
 
