@@ -22,7 +22,7 @@ from .table import Table
 from .expressions import (
     ALIAS_SEPARATOR,
     Expression,
-    BinaryOperatorExpression,
+    NaryOperatorExpression,
     TableExpression,
     ColumnExpression,
     OrderExpression,
@@ -36,7 +36,6 @@ from .table_mixins import (
     _WithVersion,
     _WithUpdatedAtTimestamp,
 )
-from .transaction import transaction
 from .utils.get_table_by_name import get_table_by_name
 
 logger = logging.getLogger("ormantism")
@@ -63,12 +62,7 @@ def run_sql(
         parameters = ()
     if ensure_structure and model != Table and not getattr(model, "_CHECKED_TABLE_EXISTENCE", False):
         ensure_table_structure(model)
-    conn_name = getattr(model, "_CONNECTION_NAME", "default")
-    with transaction(connection_name=conn_name) as t:
-        cursor = t.execute(sql, parameters)
-        result = cursor.fetchall()
-        cursor.close()
-    return result
+    return model._connection.execute(sql, parameters)
 
 
 def create_table(model: type[Table], created: Optional[set[type[Table]]] = None) -> None:
@@ -386,7 +380,7 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
                 continue
             if field.reference_type == Table:
                 raise ValueError(f"Generic reference cannot be preloaded: {path_str}")
-            # Avoid using "e in result": Expression.__eq__ returns a BinaryOperatorExpression, so use path
+            # Avoid using "e in result": Expression.__eq__ returns a NaryOperatorExpression, so use path
             if not any(te.path == e.path and te.table is e.table for te in result):
                 result.append(e)
     return result
@@ -455,6 +449,16 @@ class Query(BaseModel):
             root = table._root_expression()
             object.__setattr__(self, "select_expressions", [root.get_column_expression(_pk_name(table))])
 
+    @property
+    def _connection(self):
+        """Connection for this query's table (from table._connection)."""
+        return self.table._connection
+
+    @property
+    def _dialect(self):
+        """Dialect for this query's table (from table._connection.dialect)."""
+        return self.table._connection.dialect
+
     def execute(
         self, sql: str, parameters: Optional[tuple[Any, ...]] = None
     ) -> list[tuple[Any, ...]]:
@@ -473,12 +477,7 @@ class Query(BaseModel):
         if parameters is None:
             parameters = ()
         ensure_table_structure(self.table)
-        conn_name = getattr(self.table, "_CONNECTION_NAME", "default")
-        with transaction(connection_name=conn_name) as t:
-            cursor = t.execute(sql, parameters)
-            result = cursor.fetchall()
-            cursor.close()
-        return result
+        return self._connection.execute(sql, parameters)
 
     def _execute_with_column_names(
         self,
@@ -489,13 +488,7 @@ class Query(BaseModel):
         if not parameters:
             parameters = ()
         ensure_table_structure(self.table)
-        conn_name = getattr(self.table, "_CONNECTION_NAME", "default")
-        with transaction(connection_name=conn_name) as t:
-            cursor = t.execute(sql, parameters)
-            column_names = [d[0] for d in cursor.description] if cursor.description else []
-            rows = cursor.fetchall()
-            cursor.close()
-        return rows, column_names
+        return self._connection.execute_with_column_names(sql, parameters)
 
     def execute_returning(
         self,
@@ -538,11 +531,15 @@ class Query(BaseModel):
     def _resolve_user_path(self, path_str: str) -> ColumnExpression | TableExpression:
         """Resolve a user path string (e.g. 'name', 'book.title', 'book__title') to a ColumnExpression or TableExpression."""
         path_str = path_str.replace("__", ".")
-        root = self.table._root_expression()
         parts = path_str.split(".")
-        e: ColumnExpression | TableExpression = root
+        e: ColumnExpression | TableExpression = self.table._root_expression()
         for p in parts:
-            e = getattr(e, p)
+            if isinstance(e, TableExpression):
+                e = e.get_column_expression(p)
+            else:
+                raise ValueError(
+                    f"Cannot resolve path '{path_str}': '{p}' is not a table (column expressions cannot be traversed)"
+                )
         assert isinstance(e, (ColumnExpression, TableExpression))
         return e
 

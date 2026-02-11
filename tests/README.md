@@ -56,7 +56,7 @@ Tests for `ColumnExpression` and `OrderExpression`: SQL and values for column ex
 
 ### expressions/test_expression_base.py
 
-Tests for the base expression layer: `Expression`, `ALIAS_SEPARATOR`, `ArgumentedExpression`, and the SQL/values of `FunctionExpression`, `UnaryOperatorExpression`, and `BinaryOperatorExpression`.
+Tests for the base expression layer: `Expression`, `ALIAS_SEPARATOR`, `ArgumentedExpression`, and the SQL/values of `FunctionExpression`, `UnaryOperatorExpression`, and `NaryOperatorExpression`.
 
 ### expressions/test_expression_operators.py
 

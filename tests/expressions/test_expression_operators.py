@@ -5,7 +5,7 @@ from ormantism.expressions import (
     TableExpression,
     ColumnExpression,
     OrderExpression,
-    BinaryOperatorExpression,
+    NaryOperatorExpression,
     UnaryOperatorExpression,
     FunctionExpression,
     collect_join_paths_from_expression,
@@ -18,7 +18,7 @@ def test_expression_eq(setup_db):
 
     col = User.get_column_expression("id")
     expr = col == 42
-    assert isinstance(expr, BinaryOperatorExpression)
+    assert isinstance(expr, NaryOperatorExpression)
     assert expr.symbol == "="
     assert expr.sql == "(user.id = ?)"
     assert expr.values == (42,)
@@ -30,7 +30,7 @@ def test_expression_in(setup_db):
 
     col = User.get_column_expression("id")
     expr = col.in_([1, 2, 3])
-    assert isinstance(expr, BinaryOperatorExpression)
+    assert isinstance(expr, NaryOperatorExpression)
     assert expr.symbol == "IN"
     assert expr.arguments[0] is col
     assert expr.arguments[1] == [1, 2, 3]
@@ -56,7 +56,7 @@ def test_expression_is_and_is_not(setup_db):
 
     col = User.get_column_expression("name")
     expr = col.is_(None)
-    assert isinstance(expr, BinaryOperatorExpression)
+    assert isinstance(expr, NaryOperatorExpression)
     assert expr.symbol == "IS"
     assert expr.sql == "(user.name IS ?)"
     is_not_null = col.is_not_null()
@@ -84,7 +84,7 @@ def test_expression_and_or(setup_db):
 
     col = User.get_column_expression("id")
     e1 = (col == 1) & (col == 2)
-    assert isinstance(e1, BinaryOperatorExpression)
+    assert isinstance(e1, NaryOperatorExpression)
     assert e1.symbol == "AND"
     assert e1.sql == "((user.id = ?) AND (user.id = ?))"
     assert e1.values == (1, 2)

@@ -8,7 +8,7 @@ from ormantism.expressions import (
     ArgumentedExpression,
     FunctionExpression,
     UnaryOperatorExpression,
-    BinaryOperatorExpression,
+    NaryOperatorExpression,
 )
 
 
@@ -53,18 +53,18 @@ def test_unary_operator_postfix():
 
 
 def test_binary_operator_expression_sql_and_values():
-    expr = BinaryOperatorExpression(symbol="=", arguments=("a.id", 42))
+    expr = NaryOperatorExpression(symbol="=", arguments=("a.id", 42))
     assert expr.sql == "(? = ?)"
     assert expr.values == ("a.id", 42)
 
 
 def test_binary_operator_empty_symbol_raises():
-    expr = BinaryOperatorExpression(symbol="", arguments=(1, 2))
+    expr = NaryOperatorExpression(symbol="", arguments=(1, 2))
     with pytest.raises(ValueError, match="symbol"):
         _ = expr.sql
 
 
 def test_argumented_expression_values_recursion():
-    inner = BinaryOperatorExpression(symbol="=", arguments=("x", 1))
-    outer = BinaryOperatorExpression(symbol="AND", arguments=(inner, "y"))
+    inner = NaryOperatorExpression(symbol="=", arguments=("x", 1))
+    outer = NaryOperatorExpression(symbol="AND", arguments=(inner, "y"))
     assert outer.values == ("x", 1, "y")

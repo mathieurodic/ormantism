@@ -3,6 +3,7 @@
 from pydantic._internal._model_construction import ModelMetaclass
 
 from .column import Column
+from .connection import _ConnectionDescriptor
 from .expressions import TableExpression
 from .utils.supermodel import SuperModel
 from .table_mixins import (
@@ -79,4 +80,6 @@ class TableMeta(ModelMetaclass):
         setattr(result, "pk", root.get_column_expression(pk_name))
         # Root table expression for select(Model._expression) and helpers that take a TableExpression.
         setattr(result, "_expression", root)
+        # Connection descriptor (set here so Pydantic does not treat _connection as a private attr).
+        setattr(result, "_connection", _ConnectionDescriptor())
         return result

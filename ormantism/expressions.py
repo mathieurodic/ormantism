@@ -41,21 +41,26 @@ class Expression(BaseModel):
         """Bound values for placeholders in ``sql``, in order."""
         return ()
 
-    def in_(self, other: Any) -> BinaryOperatorExpression:
-        """Build an IN expression (e.g. ``User.id.in_([1, 2, 3])``)."""
-        return BinaryOperatorExpression(symbol="IN", arguments=(self, other))
+    @property
+    def _dialect(self):
+        """Dialect in scope for this expression; subclasses override or resolve from arguments."""
+        raise NotImplementedError("_dialect")
 
-    def is_(self, other: Any) -> BinaryOperatorExpression:
+    def in_(self, other: Any) -> NaryOperatorExpression:
+        """Build an IN expression (e.g. ``User.id.in_([1, 2, 3])``)."""
+        return NaryOperatorExpression(symbol="IN", arguments=(self, other))
+
+    def is_(self, other: Any) -> NaryOperatorExpression:
         """Build an IS expression (e.g. for ``IS NULL``)."""
-        return BinaryOperatorExpression(symbol="IS", arguments=(self, other))
+        return NaryOperatorExpression(symbol="IS", arguments=(self, other))
 
     def is_null(self) -> UnaryOperatorExpression:
         """Build an IS NULL expression."""
         return UnaryOperatorExpression(symbol="IS NULL", arguments=(self,), postfix=True)
 
-    def is_not(self, other: Any) -> BinaryOperatorExpression:
+    def is_not(self, other: Any) -> NaryOperatorExpression:
         """Build an IS NOT expression."""
-        return BinaryOperatorExpression(symbol="IS NOT", arguments=(self, other))
+        return NaryOperatorExpression(symbol="IS NOT", arguments=(self, other))
 
     def is_not_null(self) -> UnaryOperatorExpression:
         """Build an IS NOT NULL expression."""
@@ -65,53 +70,53 @@ class Expression(BaseModel):
         """Build a NOT expression."""
         return UnaryOperatorExpression(symbol="NOT", arguments=(self,))
 
-    def __and__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="AND", arguments=(self, other))
+    def __and__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="AND", arguments=(self, other))
 
-    def __or__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="OR", arguments=(self, other))
+    def __or__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="OR", arguments=(self, other))
 
-    def __add__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="+", arguments=(self, other))
-    
-    def __sub__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="-", arguments=(self, other))
-    
+    def __add__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="+", arguments=(self, other))
+
+    def __sub__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="-", arguments=(self, other))
+
     def __neg__(self) -> UnaryOperatorExpression:
         return UnaryOperatorExpression(symbol="-", arguments=(self,))
 
     def __pos__(self) -> UnaryOperatorExpression:
         return UnaryOperatorExpression(symbol="+", arguments=(self,))
 
-    def __mul__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="*", arguments=(self, other))
+    def __mul__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="*", arguments=(self, other))
 
-    def __truediv__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="/", arguments=(self, other))
+    def __truediv__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="/", arguments=(self, other))
 
-    def __mod__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="%", arguments=(self, other))
+    def __mod__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="%", arguments=(self, other))
 
     def __pow__(self, other: Any) -> FunctionExpression:
         return FunctionExpression(symbol="POW", arguments=(self, other))
 
-    def __eq__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="=", arguments=(self, other))
+    def __eq__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="=", arguments=(self, other))
 
-    def __ne__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="!=", arguments=(self, other))
+    def __ne__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="!=", arguments=(self, other))
 
-    def __lt__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="<", arguments=(self, other))
+    def __lt__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="<", arguments=(self, other))
 
-    def __le__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol="<=", arguments=(self, other))
+    def __le__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol="<=", arguments=(self, other))
 
-    def __gt__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol=">", arguments=(self, other))
+    def __gt__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol=">", arguments=(self, other))
 
-    def __ge__(self, other: Any) -> BinaryOperatorExpression:
-        return BinaryOperatorExpression(symbol=">=", arguments=(self, other))
+    def __ge__(self, other: Any) -> NaryOperatorExpression:
+        return NaryOperatorExpression(symbol=">=", arguments=(self, other))
 
 
 class ArgumentedExpression(Expression):
@@ -147,6 +152,18 @@ class ArgumentedExpression(Expression):
         """All literal values from arguments, in order (recursing into nested expressions)."""
         return sum(map(self._argument_to_values, self.arguments), ())
 
+    @property
+    def _dialect(self):
+        """Dialect from the first argument that has one (for use in e.g. self._dialect.f.concat(...))."""
+        for a in self.arguments:
+            if isinstance(a, Expression) and hasattr(a, "_dialect"):
+                try:
+                    return a._dialect
+                except AttributeError:
+                    continue
+        raise AttributeError("_dialect")
+
+
 class FunctionExpression(ArgumentedExpression):
     """SQL function call: ``symbol(args...)`` (e.g. ``LOWER(name)``, ``POW(x, 2)``)."""
 
@@ -171,14 +188,17 @@ class UnaryOperatorExpression(ArgumentedExpression):
         return f"{self.symbol} {argument}"
 
 
-class BinaryOperatorExpression(ArgumentedExpression):
-    """Two-argument operator (e.g. ``=``, ``<``, ``IN``, ``AND``)."""
+class NaryOperatorExpression(ArgumentedExpression):
+    """N-argument operator (e.g. ``=``, ``AND``, ``||`` for concat)."""
 
     @property
     def sql(self) -> str:
         if not self.symbol:
-            raise ValueError("BinaryOperatorExpression must have a symbol")
-        return f"({self._argument_to_sql(self.arguments[0])} {self.symbol} {self._argument_to_sql(self.arguments[1])})"
+            raise ValueError("NaryOperatorExpression must have a symbol")
+        if not self.arguments:
+            raise ValueError("NaryOperatorExpression must have at least one argument")
+        parts = tuple(map(self._argument_to_sql, self.arguments))
+        return "(" + (" " + self.symbol + " ").join(parts) + ")"
 
 
 class TableExpression(Expression):
@@ -240,6 +260,11 @@ class TableExpression(Expression):
         else:
             yield f"FROM {self.table._get_table_name()}"
 
+    @property
+    def _dialect(self):
+        """Dialect for this table expression (from table._connection.dialect)."""
+        return self.table._connection.dialect
+
 
 class ColumnExpression(Expression):
     """Reference to a single column on a table (or joined table).
@@ -273,6 +298,11 @@ class ColumnExpression(Expression):
         """Order by this column descending (for use in ``order_by(...)``)."""
         return OrderExpression(column_expression=self, desc=True)
 
+    @property
+    def _dialect(self):
+        """Dialect for this column (from table_expression.table._connection.dialect)."""
+        return self.table_expression.table._connection.dialect
+
 
 class OrderExpression(Expression):
     """ORDER BY spec: one column and ascending or descending."""
@@ -290,6 +320,11 @@ class OrderExpression(Expression):
         """Column with ``DESC`` or ``ASC`` suffix."""
         return f"{self.column_expression.sql} {'DESC' if self.desc else 'ASC'}"
 
+    @property
+    def _dialect(self):
+        """Dialect for this order expression (from column_expression._dialect)."""
+        return self.column_expression._dialect
+
 
 def collect_join_paths_from_expression(expr: Expression) -> set[str]:
     """Collect dot-separated join paths (e.g. ``books``, ``books.author``) from an expression tree."""
@@ -304,7 +339,7 @@ def collect_join_paths_from_expression(expr: Expression) -> set[str]:
                 paths.add(e.path_str)
         elif isinstance(e, OrderExpression):
             walk(e.column_expression)
-        elif isinstance(e, (BinaryOperatorExpression, UnaryOperatorExpression, FunctionExpression)):
+        elif isinstance(e, (NaryOperatorExpression, UnaryOperatorExpression, FunctionExpression)):
             for a in e.arguments:
                 if isinstance(a, Expression):
                     walk(a)
@@ -321,5 +356,6 @@ __all__ = [
     "TableExpression",
     "ColumnExpression",
     "OrderExpression",
+    "NaryOperatorExpression",
     "collect_join_paths_from_expression",
 ]
