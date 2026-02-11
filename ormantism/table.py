@@ -27,7 +27,7 @@ class Table(metaclass=TableMeta):
     """Base class for ORM table models; provides DB operations and identity semantics."""
 
     model_config = {"arbitrary_types_allowed": True}
-    _CHECKED_TABLE_EXISTENCE: ClassVar[bool] = False
+    _ensured_table_structure: ClassVar[bool] = False
 
     def __eq__(self, other: "Table"):
         """Compare by identity (hash); both must be the same class."""
@@ -47,10 +47,13 @@ class Table(metaclass=TableMeta):
         return self
 
     # INSERT
+    def save(self, init_data: dict):
+        """Persist the instance to the database (INSERT) and rehydrate generated columns."""
+        self.__class__.q().insert(instance=self, init_data=init_data)
+
     def on_after_create(self, init_data: dict):
         """Persist the instance to the database (INSERT) and set generated columns."""
-        from . import query
-        query.insert_instance(self, init_data)
+        self.save(init_data)
 
     # UPDATE
     def on_before_update(self, new_data):
@@ -163,13 +166,6 @@ class Table(metaclass=TableMeta):
                         statements.append(stmt)
         return statements
 
-    # SQL execution (delegate to query module; kept for tests and internal callers)
-    @classmethod
-    def _execute(cls, sql: str, parameters=None, check=True) -> list[tuple]:
-        """Run SQL and return fetched rows; optionally ensure table/columns exist first."""
-        from . import query
-        return query.run_sql(cls, sql, parameters or [], ensure_structure=check)
-
     def _execute_returning(self, sql: str, parameters=None, for_insertion=False):
         """Execute SQL with RETURNING and set parsed values on self."""
         from . import query
@@ -253,15 +249,26 @@ class Table(metaclass=TableMeta):
 
     # SELECT
     @classmethod
+    def q(cls) -> "Query":
+        """Return a Query for this table. Use instead of load/load_all."""
+        from .query import Query
+        return Query(table=cls)
+
+    @classmethod
     def load(cls, reverse_order: bool = True, as_collection: bool = False,
              with_deleted=False, preload: str | list[str] = None,
              **criteria) -> "Table":
         """Load by criteria; supports preload paths and optional soft-delete."""
+        warnings.warn(
+            "load() is deprecated; use cls.q().where(...).first() or cls.q().where(...).all() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from .expressions import ColumnExpression
         from .query import Query, _pk_name, _stored_pk
         preload_list = [preload] if isinstance(preload, str) else (preload or [])
         root = cls._root_expression()
-        q = Query(cls)
+        q = Query(table=cls)
         if preload_list:
             select_exprs = [root.get_column_expression(_pk_name(cls))]
             for p in preload_list:
@@ -301,6 +308,11 @@ class Table(metaclass=TableMeta):
     @classmethod
     def load_all(cls, **criteria) -> list["Table"]:
         """Load all rows matching the given criteria."""
+        warnings.warn(
+            "load_all() is deprecated; use cls.q().where(...).all() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return cls.load(as_collection=True, **criteria)
 
     # helper methods

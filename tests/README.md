@@ -78,7 +78,7 @@ Tests for `ormantism.query`: Query API, SQL building, and instance hydration.
 
 ### query/test_query.py
 
-Tests for the main query API: `Query`, `ensure_table_structure`, `run_sql`, select/where/order/limit, update/delete, `instance_from_row`, versioning, polymorphic refs, and coverage-oriented helpers.
+Tests for the main query API: `Query`, `Query.ensure_table_structure`, select/where/order/limit, update/delete, `instance_from_row`, versioning, polymorphic refs, and coverage-oriented helpers.
 
 ### query/test_query_join.py
 

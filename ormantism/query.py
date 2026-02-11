@@ -13,7 +13,6 @@ import json
 import logging
 import sqlite3
 from collections import defaultdict
-from functools import cache
 from typing import Any, Optional, Iterable
 
 from pydantic import BaseModel, Field
@@ -64,34 +63,10 @@ from .utils.get_table_by_name import get_table_by_name
 logger = logging.getLogger("ormantism")
 
 
-def run_sql(
-    model: type[Table],
-    sql: str,
-    parameters: Optional[tuple[Any, ...] | list[Any]] = None,
-    ensure_structure: bool = True,
-) -> list[tuple[Any, ...]]:
-    """Run SQL for the given Table model and return fetched rows.
-
-    Args:
-        model: The Table subclass (used for connection and optional schema check).
-        sql: Full SQL statement.
-        parameters: Bound parameters; default ().
-        ensure_structure: If True, ensure table and columns exist before running.
-
-    Returns:
-        List of raw row tuples from cursor.fetchall().
-    """
-    if parameters is None:
-        parameters = ()
-    if ensure_structure and model != Table and not getattr(model, "_CHECKED_TABLE_EXISTENCE", False):
-        ensure_table_structure(model)
-    return model._connection.execute(sql, parameters)
-
-
 def create_table(model: type[Table], created: Optional[set[type[Table]]] = None) -> None:
     """Create the table and referenced tables if they do not exist.
 
-    Uses run_sql(..., ensure_structure=False) to avoid recursion.
+    Uses Query.execute(..., ensure_structure=False) to avoid recursion.
     """
     if created is None:
         created = set()
@@ -119,16 +94,16 @@ def create_table(model: type[Table], created: Optional[set[type[Table]]] = None)
     ]
     stmt_join = ",\n  ".join(statements)
     sql = f"CREATE TABLE IF NOT EXISTS {model._get_table_name()} (\n  {stmt_join})"
-    model._execute(sql, (), check=False)
+    Query(table=model).execute(sql, (), ensure_structure=False)
 
 
 def add_columns(model: type[Table]) -> None:
     """Add any missing columns to the existing table (SQLite ALTER TABLE)."""
     tbl = model._get_table_name()
-    rows = model._execute(
+    rows = Query(table=model).execute(
         f"SELECT name FROM pragma_table_info('{tbl}')",
         (),
-        check=False,
+        ensure_structure=False,
     )
     columns_names = {name for name, in rows}
     # Never ALTER-add columns that mixins provide via TABLE_SQL_CREATIONS (id, created_at)
@@ -147,32 +122,14 @@ def add_columns(model: type[Table]) -> None:
         logger.info("ADD COLUMN %s.%s", field.table.__name__, field.name)
         for sql_creation in field.sql_creations:
             try:
-                model._execute(
+                Query(table=model).execute(
                     f"ALTER TABLE {model._get_table_name()} ADD COLUMN " + sql_creation,
                     (),
-                    check=False,
+                    ensure_structure=False,
                 )
             except sqlite3.OperationalError as error:
                 if "duplicate column name" not in error.args[0]:
                     raise
-
-
-@cache
-def ensure_table_structure(model: type[Table]) -> None:
-    """Ensure the table exists and has all model columns.
-
-    Calls create_table() and add_columns(), then sets model._CHECKED_TABLE_EXISTENCE.
-
-    Args:
-        model: A Table subclass. No-op for the base Table class.
-    """
-    if model == Table:
-        return
-    if getattr(model, "_CHECKED_TABLE_EXISTENCE", False):
-        return
-    create_table(model)
-    add_columns(model)
-    model._CHECKED_TABLE_EXISTENCE = True
 
 
 def apply_returning(
@@ -201,7 +158,7 @@ def apply_returning(
                 returned_fields.append(name)
     if returned_fields:
         sql += "\nRETURNING " + ", ".join(returned_fields)
-    rows = run_sql(cls, sql, list(parameters), ensure_structure=True)
+    rows = Query(table=cls).execute(sql, list(parameters), ensure_structure=True)
     for name, value in zip(returned_fields, rows[0]):
         field = cls._get_field(name)
         parsed_value = field.parse(value)
@@ -216,80 +173,6 @@ def _stored_pk(instance: Table) -> Optional[Any]:
     if v is not None and not isinstance(v, Expression):
         return v
     return None
-
-
-def insert_instance(instance: Table, init_data: dict) -> None:
-    """Persist the instance to the database (INSERT) and set generated columns.
-
-    Handles versioning (e.g. _WithVersion), serialization, and RETURNING.
-    """
-    if instance.id is not None and instance.id >= 0:
-        return
-    instance.check_read_only(init_data)
-    cls = instance.__class__
-    if isinstance(instance, _WithVersion):
-        tbl = cls._get_table_name()
-        sql = f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
-        values = []
-        for name, value in init_data.items():
-            if name not in cls._VERSIONING_ALONG:
-                continue
-            if value is None:
-                sql += f" AND {name} IS NULL"
-            else:
-                sql += f" AND {name} = ?"
-                values.append(value)
-        sql += " RETURNING version"
-        rows = run_sql(cls, sql, values, ensure_structure=True)
-        init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
-    exclude = set(cls.model_fields)
-    include = set()
-    processed_data = cls.process_data(init_data)
-    formatted_data = {}
-    for name, field in cls._get_fields().items():
-        if (
-            not field.is_reference
-            and name not in cls._READ_ONLY_FIELDS
-            and field.default is not None
-        ):
-            include.add(name)
-            if name not in processed_data:
-                object.__setattr__(instance, name, field.default)
-    for name, value in processed_data.items():
-        include.add(name)
-        if name in exclude:
-            exclude.remove(name)
-        else:
-            formatted_data[name] = value
-    for name, field in cls._get_fields().items():
-        if name not in include or name in exclude or field.is_reference:
-            continue
-        if name not in processed_data and field.default is not None:
-            instance_value = field.default
-        else:
-            instance_value = getattr(instance, name)
-        formatted_data[name] = field.serialize(instance_value)
-    if formatted_data:
-        tbl = cls._get_table_name()
-        sql = (
-            f"INSERT INTO {tbl} ({', '.join(formatted_data.keys())})\n"
-            f"VALUES ({', '.join('?' for _ in formatted_data.values())})"
-        )
-        apply_returning(instance, sql, list(formatted_data.values()), for_insertion=True)
-    else:
-        tbl = cls._get_table_name()
-        sql = f"INSERT INTO {tbl} DEFAULT VALUES"
-        apply_returning(instance, sql, [], for_insertion=True)
-    for name, field in cls._get_fields().items():
-        if (
-            not field.is_reference
-            and name not in cls._READ_ONLY_FIELDS
-            and field.default is not None
-            and name not in processed_data
-        ):
-            object.__setattr__(instance, name, field.default)
-    if hasattr(instance, "__post_init__"):
-        instance.__post_init__()
 
 
 def update_instance(instance: Table, new_data: dict) -> None:
@@ -319,14 +202,13 @@ def delete_instance(instance: Table) -> None:
     cls = instance.__class__
     tbl = cls._get_table_name()
     if isinstance(instance, _WithSoftDelete):
-        run_sql(
-            cls,
+        Query(table=cls).execute(
             f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
             [instance.id],
             ensure_structure=True,
         )
     else:
-        run_sql(cls, f"DELETE FROM {tbl} WHERE id = ?", [instance.id], ensure_structure=True)
+        Query(table=cls).execute(f"DELETE FROM {tbl} WHERE id = ?", [instance.id], ensure_structure=True)
 
 
 def _pk_name(table: type[Table]) -> str:
@@ -365,12 +247,8 @@ def _to_order_expression(table: type[Table], order: OrderExpression | ColumnExpr
 def _select_paths_from_expressions(
     table: type[Table], exprs: list[ColumnExpression | TableExpression]
 ) -> set[str]:
-    """Collect path strings from select expressions and ensure PK is included."""
-    pk = _pk_name(table)
-    paths = {e.path_str for e in exprs if e is not None}
-    if pk not in paths:
-        paths.add(pk)
-    return paths
+    """Collect path strings from select expressions."""
+    return {e.path_str for e in exprs if e is not None}
 
 
 def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> list[TableExpression]:
@@ -466,12 +344,6 @@ class Query(BaseModel):
     with_deleted: bool = False
     """If True, include soft-deleted rows (only valid for _WithSoftDelete tables)."""
 
-    def __init__(self, table: type[Table], **data):
-        super().__init__(table=table, **data)
-        if not self.select_expressions:
-            root = table._root_expression()
-            object.__setattr__(self, "select_expressions", [root.get_column_expression(_pk_name(table))])
-
     @property
     def _connection(self):
         """Connection for this query's table (from table._connection)."""
@@ -482,24 +354,43 @@ class Query(BaseModel):
         """Dialect for this query's table (from table._connection.dialect)."""
         return self.table._connection.dialect
 
+    def ensure_table_structure(self) -> None:
+        """Ensure the table exists and has all model columns.
+
+        Calls create_table() and add_columns(), then sets table._ensured_table_structure.
+        No-op for the base Table class or when already ensured.
+        """
+        if self.table == Table:
+            return
+        if getattr(self.table, "_ensured_table_structure", False):
+            return
+        create_table(self.table)
+        add_columns(self.table)
+        self.table._ensured_table_structure = True
+
     def execute(
-        self, sql: str, parameters: Optional[tuple[Any, ...]] = None
+        self,
+        sql: str,
+        parameters: Optional[tuple[Any, ...] | list[Any]] = None,
+        ensure_structure: bool = True,
     ) -> list[tuple[Any, ...]]:
         """Run raw SQL and return raw rows (low-level).
 
         For query results as Table instances, use iteration, all(), get(), or first()
-        instead. This method ensures table structure and uses the table's connection.
+        instead. This method optionally ensures table structure and uses the table's connection.
 
         Args:
             sql: Full SQL statement.
             parameters: Bound parameters for placeholders; default ().
+            ensure_structure: If True, ensure table and columns exist before running.
 
         Returns:
             List of raw row tuples from cursor.fetchall(); not Table instances.
         """
         if parameters is None:
             parameters = ()
-        ensure_table_structure(self.table)
+        if ensure_structure:
+            self.ensure_table_structure()
         return self._connection.execute(sql, parameters)
 
     def _execute_with_column_names(
@@ -510,7 +401,7 @@ class Query(BaseModel):
         """Execute SELECT and return (rows, column_names). Column names come from cursor.description (AS aliases)."""
         if not parameters:
             parameters = ()
-        ensure_table_structure(self.table)
+        self.ensure_table_structure()
         return self._connection.execute_with_column_names(sql, parameters)
 
     def execute_returning(
@@ -989,5 +880,104 @@ class Query(BaseModel):
             return row
         return None
 
+    def insert(
+        self,
+        instance: Optional[Table] = None,
+        init_data: Optional[dict[str, Any]] = None,
+    ) -> Table:
+        """Insert a row into the table and return the instance with generated columns rehydrated.
 
-__all__ = ["Query", "ALIAS_SEPARATOR", "ensure_table_structure"]
+        When instance is provided (e.g. from Table constructor via on_after_create), persists it
+        and sets PK, created_at, etc. on the instance. When instance is None, creates an empty
+        instance and inserts DEFAULT VALUES.
+        """
+        cls = self.table
+        init_data = init_data if init_data is not None else {}
+
+        if instance is None:
+            cls._suspend_validation()
+            try:
+                instance = cls()
+            finally:
+                cls._resume_validation()
+
+        if instance.id is not None and instance.id >= 0:
+            return instance
+
+        instance.check_read_only(init_data)
+
+        if isinstance(instance, _WithVersion):
+            tbl = cls._get_table_name()
+            sql = f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
+            values = []
+            for name, value in init_data.items():
+                if name not in cls._VERSIONING_ALONG:
+                    continue
+                if value is None:
+                    sql += f" AND {name} IS NULL"
+                else:
+                    sql += f" AND {name} = ?"
+                    values.append(value)
+            sql += " RETURNING version"
+            rows = self.execute(sql, values, ensure_structure=True)
+            init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
+
+        exclude = set(cls.model_fields)
+        include = set()
+        processed_data = cls.process_data(init_data)
+        formatted_data = {}
+
+        for name, field in cls._get_fields().items():
+            if (
+                not field.is_reference
+                and name not in cls._READ_ONLY_FIELDS
+                and field.default is not None
+            ):
+                include.add(name)
+                if name not in processed_data:
+                    object.__setattr__(instance, name, field.default)
+
+        for name, value in processed_data.items():
+            include.add(name)
+            if name in exclude:
+                exclude.remove(name)
+            else:
+                formatted_data[name] = value
+
+        for name, field in cls._get_fields().items():
+            if name not in include or name in exclude or field.is_reference:
+                continue
+            if name not in processed_data and field.default is not None:
+                instance_value = field.default
+            else:
+                instance_value = getattr(instance, name)
+            formatted_data[name] = field.serialize(instance_value)
+
+        if formatted_data:
+            tbl = cls._get_table_name()
+            sql = (
+                f"INSERT INTO {tbl} ({', '.join(formatted_data.keys())})\n"
+                f"VALUES ({', '.join('?' for _ in formatted_data.values())})"
+            )
+            apply_returning(instance, sql, list(formatted_data.values()), for_insertion=True)
+        else:
+            tbl = cls._get_table_name()
+            sql = f"INSERT INTO {tbl} DEFAULT VALUES"
+            apply_returning(instance, sql, [], for_insertion=True)
+
+        for name, field in cls._get_fields().items():
+            if (
+                not field.is_reference
+                and name not in cls._READ_ONLY_FIELDS
+                and field.default is not None
+                and name not in processed_data
+            ):
+                object.__setattr__(instance, name, field.default)
+
+        if hasattr(instance, "__post_init__"):
+            instance.__post_init__()
+
+        return instance
+
+
+__all__ = ["Query", "ALIAS_SEPARATOR"]

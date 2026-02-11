@@ -39,22 +39,23 @@ class TestCreateTableAndAddColumns:
         A._add_columns()
 
     def test_add_columns_reraises_other_operational_error(self, setup_db):
+        from ormantism.query import Query
+
         class A(Table, with_timestamps=True):
             name: str = ""
 
         A._create_table()
         A._add_columns()
-        original_execute = A._execute
+        original_execute = Query.execute
 
-        def execute_raise_on_alter(sql, *args, **kwargs):
+        def execute_raise_on_alter(self, sql, parameters=None, ensure_structure=True):
             if "ALTER" in sql:
                 raise sqlite3.OperationalError("other error")
             if "pragma_table_info" in sql:
                 return [("id",), ("created_at",), ("updated_at",), ("deleted_at",)]
-            parameters = kwargs.pop("parameters", []) if not args else args[0]
-            return original_execute(sql, parameters, **kwargs)
+            return original_execute(self, sql, parameters, ensure_structure)
 
-        with patch.object(A, "_execute", execute_raise_on_alter):
+        with patch.object(Query, "execute", execute_raise_on_alter):
             with pytest.raises(sqlite3.OperationalError):
                 A._add_columns()
 

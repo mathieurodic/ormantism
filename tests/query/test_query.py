@@ -1,4 +1,4 @@
-"""Tests for ormantism.query: Query, ensure_table_structure, run_sql, select/where/order/limit, update/delete, instance_from_row, versioning, polymorphic refs."""
+"""Tests for ormantism.query: Query, Query.ensure_table_structure, select/where/order/limit, update/delete, instance_from_row, versioning, polymorphic refs."""
 
 import pytest
 from ormantism.table import Table
@@ -6,8 +6,6 @@ from ormantism.query import (
     Query,
     ALIAS_SEPARATOR,
     add_columns,
-    ensure_table_structure,
-    run_sql,
 )
 
 
@@ -18,13 +16,13 @@ def _pk(inst: Table):
 
 
 class TestEnsureTableStructure:
-    """Test ensure_table_structure runs once per model and creates table/columns."""
+    """Test Query.ensure_table_structure runs once per model and creates table/columns."""
 
     def test_ensure_table_structure_creates_table(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         # Table exists: we can load
         a = A(name="x")
         assert a.id is not None
@@ -33,14 +31,14 @@ class TestEnsureTableStructure:
         class B(Table, with_timestamps=True):
             value: int = 0
 
-        ensure_table_structure(B)
-        ensure_table_structure(B)
+        Query(table=B).ensure_table_structure()
+        Query(table=B).ensure_table_structure()
         b = B()
         assert b.id is not None
 
     def test_ensure_table_structure_base_table_no_op(self, setup_db):
-        """ensure_table_structure(Table) is a no-op and does not raise."""
-        ensure_table_structure(Table)
+        """Query.ensure_table_structure(Table) is a no-op and does not raise."""
+        Query(table=Table).ensure_table_structure()
 
 
 class TestQueryBasics:
@@ -51,8 +49,9 @@ class TestQueryBasics:
             name: str = ""
 
         q = Query(table=A)
-        assert q.select_expressions
-        assert q.select_expressions[0].path_str == "id"
+        # When select_expressions is empty, PK is added at SQL-build time
+        assert not q.select_expressions
+        assert "id" in q.sql
         # Query runs and returns rows (SELECT built from join)
         list(q)
 
@@ -849,15 +848,15 @@ class TestQueryOffset:
 
 
 class TestRunSqlAndEnsureStructureCoverage:
-    """Tests to cover run_sql, add_columns, and related paths in query.py."""
+    """Tests to cover Query.execute, add_columns, and related paths in query.py."""
 
-    def test_run_sql_with_parameters_none(self, setup_db):
-        """run_sql(model, sql, None) uses empty tuple for parameters (covers parameters is None branch)."""
+    def test_execute_with_parameters_none(self, setup_db):
+        """Query.execute(sql, None) uses empty tuple for parameters (covers parameters is None branch)."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        ensure_table_structure(A)
-        rows = run_sql(A, "SELECT 1 AS x", parameters=None)
+        Query(table=A).ensure_table_structure()
+        rows = Query(table=A).execute("SELECT 1 AS x", parameters=None)
         assert len(rows) == 1
         assert rows[0][0] == 1
 
@@ -869,17 +868,17 @@ class TestRunSqlAndEnsureStructureCoverage:
 
         tbl = A._get_table_name()
         # Create table without "value" column so add_columns will ALTER TABLE
-        run_sql(
-            A,
+        Query(table=A).execute(
             f"CREATE TABLE IF NOT EXISTS {tbl} (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
             "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP, "
             "deleted_at TIMESTAMP, name TEXT)",
+            (),
             ensure_structure=False,
         )
         # Clear so ensure_table_structure will run create_table + add_columns
-        if getattr(A, "_CHECKED_TABLE_EXISTENCE", False):
-            delattr(A, "_CHECKED_TABLE_EXISTENCE")
-        ensure_table_structure(A)
+        if getattr(A, "_ensured_table_structure", False):
+            delattr(A, "_ensured_table_structure")
+        Query(table=A).ensure_table_structure()
         a = A(name="x", value=42)
         assert a.id == 1
         assert a.name == "x"
@@ -890,7 +889,7 @@ class TestRunSqlAndEnsureStructureCoverage:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         A(name="one")
         add_columns(A)
         row = Query(table=A).first()
@@ -906,7 +905,7 @@ class TestVersionedTableDefaultOrder:
         class Doc(Table, versioning_along=("name",)):
             name: str = ""
 
-        ensure_table_structure(Doc)
+        Query(table=Doc).ensure_table_structure()
         q = Query(table=Doc)
         sql = q.sql
         assert "version" in sql
@@ -1165,7 +1164,7 @@ class TestUpdateAndDeleteInstanceCoverage:
 
 
 class TestInsertInstanceCoverage:
-    """insert_instance branches: versioned insert, default-only insert."""
+    """Query.insert branches: versioned insert, default-only insert."""
 
     def test_versioned_insert_sets_version(self, setup_db):
         class Doc(Table, versioning_along=("name",)):
@@ -1213,16 +1212,15 @@ class TestColumnNameForPath:
 
 
 class TestEnsureTableStructureCacheCoverage:
-    """ensure_table_structure early return when _CHECKED_TABLE_EXISTENCE (158)."""
+    """Query.ensure_table_structure early return when _ensured_table_structure is set."""
 
     def test_ensure_table_structure_second_call_returns_early(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         A(name="x")
-        ensure_table_structure.cache_clear()
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()  # second call returns early
         row = Query(table=A).first()
         assert row is not None
         assert row.id == 1
@@ -1238,7 +1236,7 @@ class TestApplyReturningParametersNone:
         class A(Table, with_timestamps=False):
             name: str = "a"
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         a = A.__new__(A)
         a.__dict__.update({"name": "a"})
         apply_returning(a, "INSERT INTO a DEFAULT VALUES", None, for_insertion=True)
@@ -1369,7 +1367,7 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             ref: Table | None = None
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         q = Query(table=A).select(A)
         sql = q.sql
         assert "ref_table" in sql
@@ -1417,8 +1415,8 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             items: list[Table] = []
 
-        ensure_table_structure(A)
-        ensure_table_structure(B)
+        Query(table=A).ensure_table_structure()
+        Query(table=B).ensure_table_structure()
         q = Query(table=A).select(A.pk)
         sql = q.sql
         assert "items_ids" in sql
@@ -1435,8 +1433,8 @@ class TestPolymorphicListRefHydration:
         class A(Table, with_timestamps=True):
             items: list[Table] = []
 
-        ensure_table_structure(A)
-        ensure_table_structure(B)
+        Query(table=A).ensure_table_structure()
+        Query(table=B).ensure_table_structure()
         b1 = B(x=10)
         b2 = B(x=20)
         a = A(items=[b1, b2])
@@ -1498,24 +1496,20 @@ class TestQueryCoverageHelpers:
         assert _sql_from_join([]) == ""
 
     def test_insert_instance_applies_default_for_field_not_in_init_data(self, setup_db):
-        """insert_instance sets default on instance for field not in processed_data (lines 251, 275)."""
-        from ormantism.query import insert_instance
-
+        """Query.insert sets default on instance for field not in processed_data (lines 251, 275)."""
         class A(Table, with_timestamps=True):
             name: str = ""
             optional: int = 42
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         a = A.__new__(A)
         a.__dict__.update({"name": "x", "id": None})
-        insert_instance(a, {"name": "x"})
+        A.q().insert(instance=a, init_data={"name": "x"})
         assert a.id is not None
         assert getattr(a, "optional", None) == 42
 
     def test_insert_instance_calls_post_init(self, setup_db):
-        """insert_instance calls __post_init__ when present (query.py ~292)."""
-        from ormantism.query import insert_instance
-
+        """Query.insert calls __post_init__ when present (query.py ~292)."""
         post_init_called = []
 
         class A(Table, with_timestamps=True):
@@ -1524,10 +1518,10 @@ class TestQueryCoverageHelpers:
             def __post_init__(self):
                 post_init_called.append(True)
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         a = A.__new__(A)
         a.__dict__.update({"name": "x", "id": None})
-        insert_instance(a, {"name": "x"})
+        A.q().insert(instance=a, init_data={"name": "x"})
         assert a.id is not None
         assert post_init_called == [True]
 
@@ -1539,8 +1533,8 @@ class TestQueryCoverageHelpers:
         class Parent(Table, with_timestamps=True):
             kids: list[Child] = []
 
-        ensure_table_structure(Parent)
-        ensure_table_structure(Child)
+        Query(table=Parent).ensure_table_structure()
+        Query(table=Child).ensure_table_structure()
         p = Parent()
         assert p.id == 1
         tbl = Parent._get_table_name()
@@ -1550,15 +1544,14 @@ class TestQueryCoverageHelpers:
         assert inst.id == 1
         assert inst.kids == []
 
-    def test_select_paths_adds_pk_when_not_in_expressions(self, setup_db):
-        """_select_paths_from_expressions adds pk to paths when missing (line 364)."""
+    def test_select_paths_from_expressions(self, setup_db):
+        """_select_paths_from_expressions returns path strings from expressions."""
         from ormantism.query import _select_paths_from_expressions
 
         class A(Table, with_timestamps=True):
             name: str = ""
 
         paths = _select_paths_from_expressions(A, [A.name])
-        assert "id" in paths
         assert "name" in paths
 
     def test_collect_table_expressions_skips_column_expression(self, setup_db):
@@ -1593,7 +1586,7 @@ class TestQueryUpdateEmptySetData:
                     return {}
                 return super().process_data(data, for_filtering)
 
-        ensure_table_structure(A)
+        Query(table=A).ensure_table_structure()
         A(name="one")
         q = Query(table=A)
         _return_empty[0] = True
