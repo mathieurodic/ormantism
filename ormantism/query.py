@@ -28,6 +28,29 @@ from .expressions import (
     OrderExpression,
     collect_join_paths_from_expression,
 )
+
+# Django-style lookup -> Expression method for Query.where(**kwargs) / filter(**kwargs).
+# See: https://docs.djangoproject.com/en/stable/ref/models/querysets/#field-lookups
+# Not implemented: regex, iregex (DB-specific; would need dialect hooks).
+_WHERE_LOOKUP_MAP: dict[str, str] = {
+    "exact": "__eq__",
+    "iexact": "_iexact",
+    "lt": "__lt__",
+    "lte": "__le__",
+    "gt": "__gt__",
+    "gte": "__ge__",
+    "in": "in_",
+    "range": "between",
+    "isnull": "_isnull",
+    "icontains": "icontains",
+    "contains": "contains",
+    "istartswith": "istartswith",
+    "startswith": "startswith",
+    "iendswith": "iendswith",
+    "endswith": "endswith",
+    "like": "like",
+    "ilike": "ilike",
+}
 from .table_mixins import (
     _WithPrimaryKey,
     _WithSoftDelete,
@@ -543,6 +566,46 @@ class Query(BaseModel):
         assert isinstance(e, (ColumnExpression, TableExpression))
         return e
 
+    def _where_kwargs_to_expressions(self, kwargs: dict[str, Any]) -> list[Expression]:
+        """Convert Django-style where(**kwargs) into a list of expressions (ANDed by caller)."""
+        result: list[Expression] = []
+        for key, value in kwargs.items():
+            parts = key.split("__")
+            if parts[-1] in _WHERE_LOOKUP_MAP:
+                lookup = parts[-1]
+                path_str = ".".join(parts[:-1]) if len(parts) > 1 else ""
+            else:
+                lookup = "exact"
+                path_str = ".".join(parts)
+            if not path_str.strip():
+                raise ValueError(f"where kwargs key {key!r} must include a field path (e.g. name__icontains or foo)")
+            expr = self._resolve_user_path(path_str)
+            # For relation (TableExpression) + isnull, delegate to expr._isnull (uses FK column)
+            if isinstance(expr, TableExpression) and lookup == "isnull":
+                result.append(expr._isnull(value))
+                continue
+            # For relation + exact, compare FK to value (pk or instance)
+            if isinstance(expr, TableExpression) and lookup == "exact":
+                if not isinstance(value, type) and hasattr(value, "_get_table_name") and hasattr(value, "id"):
+                    value = getattr(value, "id", value)
+                parent = expr.parent
+                if parent is not None and expr.path:
+                    field = parent.table._get_field(expr.path[-1])
+                    if field.is_reference:
+                        fk_col = parent.get_column_expression(field.column_name)
+                        result.append(fk_col == value)
+                        continue
+            # Column (or fallback) lookups
+            meth = _WHERE_LOOKUP_MAP.get(lookup)
+            if meth is None:
+                if lookup == "isnull":
+                    result.append(expr.is_null() if value else expr.is_not_null())
+                else:
+                    raise ValueError(f"Unknown lookup: {lookup!r}")
+            else:
+                result.append(getattr(expr, meth)(value))
+        return result
+
     def select(self, *columns: type[Table] | str | ColumnExpression | TableExpression) -> Query:
         """Set select/preload. Pass the table class for all fields (e.g. User), path strings (e.g. 'name', 'books.title'), or column/table expressions (e.g. User.id, User.books.title)."""
         if not columns:
@@ -560,9 +623,22 @@ class Query(BaseModel):
                 normalized.append(c)
         return self.clone_query_with(select_expressions=self.select_expressions + normalized)
 
-    def where(self, *statements: Expression) -> Query:
-        """Apply filters using expressions (e.g. where(User.id == 12))."""
-        return self.clone_query_with(where_expressions=self.where_expressions + list(statements))
+    def where(self, *statements: Expression, **kwargs: Any) -> Query:
+        """Apply filters using expressions and/or Django-style kwargs.
+
+        Examples:
+            where(User.id == 12)
+            where(name__icontains="e", value__lt=42)
+            where(foo="bar")
+        """
+        new_exprs = list(self.where_expressions) + list(statements)
+        if kwargs:
+            new_exprs.extend(self._where_kwargs_to_expressions(kwargs))
+        return self.clone_query_with(where_expressions=new_exprs)
+
+    def filter(self, *statements: Expression, **kwargs: Any) -> Query:
+        """Alias for where(). Apply filters using expressions and/or Django-style kwargs."""
+        return self.where(*statements, **kwargs)
 
     def include_deleted(self) -> Query:
         """Include soft-deleted rows in results.

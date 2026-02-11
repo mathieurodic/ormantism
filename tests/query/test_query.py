@@ -77,6 +77,15 @@ class TestQueryBasics:
         assert q2.limit_value == 10
         assert q.limit_value == 5
 
+    def test_query_dialect_property(self, setup_db):
+        """Query._dialect returns table._connection.dialect (query.py ~483)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        q = Query(table=A)
+        d = q._dialect
+        assert d is A._connection.dialect
+
 
 class TestQuerySelect:
     """Test select() and iteration with columns/preload."""
@@ -147,6 +156,143 @@ class TestQueryWhere:
         assert row is not None
         assert row.name == "a"
         assert row.value == 1
+
+
+class TestQueryWhereKwargsAndFilter:
+    """Django-style where(**kwargs) and filter alias."""
+
+    def test_where_exact_kwarg(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        A(name="foo", value=1)
+        A(name="bar", value=2)
+        q = Query(table=A).where(name="bar")
+        row = q.first()
+        assert row is not None
+        assert row.name == "bar"
+
+    def test_where_icontains_and_lt(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        A(name="Alice", value=10)
+        A(name="Bob", value=30)
+        A(name="Charlie", value=25)
+        q = Query(table=A).where(name__icontains="e", value__lt=42)
+        rows = list(q)
+        assert len(rows) >= 1
+        for r in rows:
+            assert "e" in r.name.lower()
+            assert r.value < 42
+
+    def test_where_and_expression_combined(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        A(name="x", value=1)
+        A(name="y", value=1)
+        q = Query(table=A).where(A.value == 1, name="y")
+        row = q.first()
+        assert row is not None
+        assert row.name == "y"
+        assert row.value == 1
+
+    def test_filter_alias(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="a")
+        A(name="b")
+        q = Query(table=A).filter(name="b")
+        row = q.first()
+        assert row is not None
+        assert row.name == "b"
+
+    def test_where_nested_path(self, setup_db):
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        b = B(title="Python")
+        A(book=b)
+        q = Query(table=A).where(book__title__contains="Py")
+        row = q.first()
+        assert row is not None
+        assert row.book.title == "Python"
+
+    def test_where_iexact(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="Hello")
+        A(name="HELLO")
+        A(name="hello")
+        A(name="other")
+        q = Query(table=A).where(name__iexact="hello")
+        rows = list(q)
+        assert len(rows) == 3
+        assert {r.name for r in rows} == {"Hello", "HELLO", "hello"}
+
+    def test_where_range(self, setup_db):
+        class A(Table, with_timestamps=True):
+            value: int = 0
+
+        for i in (1, 5, 10, 15, 20):
+            A(value=i)
+        q = Query(table=A).where(value__range=(5, 15))
+        rows = list(q)
+        assert len(rows) == 3
+        assert {r.value for r in rows} == {5, 10, 15}
+
+    def test_where_empty_path_raises(self, setup_db):
+        """where(**{'__exact': 5}) raises because path is empty (query.py ~581)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        q = Query(table=A)
+        with pytest.raises(ValueError, match="field path"):
+            q.where(**{"__exact": 5})
+
+    def test_where_relation_exact_fk_comparison(self, setup_db):
+        """where(book=instance) and where(book__exact=id) use FK column (query.py 589-597)."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        b = B(title="x")
+        A(book=b)
+        row = Query(table=A).where(book=b).first()
+        assert row is not None and row.book is not None and row.book.id == b.id
+        row2 = Query(table=A).where(book__exact=b.id).first()
+        assert row2 is not None and row2.book is not None
+
+    def test_where_relation_isnull(self, setup_db):
+        """relation__isnull uses TableExpression._isnull (FK column IS NULL / IS NOT NULL)."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        b = B(title="x")
+        A(book=b)
+        A(book=None)
+        q_null = Query(table=A).where(book__isnull=True)
+        rows_null = list(q_null)
+        assert len(rows_null) == 1
+        assert rows_null[0].book is None
+        q_not_null = Query(table=A).where(book__isnull=False)
+        rows_not_null = list(q_not_null)
+        assert len(rows_not_null) == 1
+        assert rows_not_null[0].book is not None
 
 
 class TestQueryOrderAndLimit:
@@ -475,6 +621,26 @@ class TestResolveUserPathAndSelectString:
 
         expr = Query(table=A)._resolve_user_path("book__title")
         assert expr.path_str == "book.title"
+
+    def test_resolve_user_path_traverse_column_raises(self, setup_db):
+        """_resolve_user_path('name.foo') raises: cannot traverse column expression (query.py ~563)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        q = Query(table=A)
+        with pytest.raises(ValueError, match="not a table"):
+            q._resolve_user_path("name.foo")
+
+    def test_select_column_expression_direct(self, setup_db):
+        """select(ColumnExpression) appends expression directly (query.py ~618 else branch)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        col = A.get_column_expression("name")
+        q = Query(table=A).select(col)
+        assert "name" in q.sql
+        rows = list(q)
+        assert all(hasattr(r, "name") for r in rows)
 
     def test_select_string_root_column(self, setup_db):
         """select('name') builds the same as select(A.name)."""
@@ -910,6 +1076,19 @@ class TestOrderByTypeError:
         assert "ORDER BY" in sql
         assert "id" in sql
 
+    def test_order_by_relation_table_expression(self, setup_db):
+        """order_by(TableExpression for relation) uses that table's PK (query.py ~662)."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        q = Query(table=A).select(A.pk, A.book).order_by(A.book).limit(2)
+        sql = q.sql
+        assert "ORDER BY" in sql
+        assert "book" in sql or "id" in sql
+
     def test_to_order_expression_table_expression_direct(self, setup_db):
         """_to_order_expression with TableExpression (350-357) - called directly."""
         from ormantism.expressions import OrderExpression
@@ -1332,6 +1511,25 @@ class TestQueryCoverageHelpers:
         insert_instance(a, {"name": "x"})
         assert a.id is not None
         assert getattr(a, "optional", None) == 42
+
+    def test_insert_instance_calls_post_init(self, setup_db):
+        """insert_instance calls __post_init__ when present (query.py ~292)."""
+        from ormantism.query import insert_instance
+
+        post_init_called = []
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+            def __post_init__(self):
+                post_init_called.append(True)
+
+        ensure_table_structure(A)
+        a = A.__new__(A)
+        a.__dict__.update({"name": "x", "id": None})
+        insert_instance(a, {"name": "x"})
+        assert a.id is not None
+        assert post_init_called == [True]
 
     def test_instance_from_row_list_ref_with_no_ids_key_uses_empty_list(self, setup_db):
         """When row has no name_ids key, list ref gets references_ids=None then [] (line 769)."""

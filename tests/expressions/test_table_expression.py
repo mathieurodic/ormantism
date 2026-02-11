@@ -50,6 +50,24 @@ def test_table_expression_get_column_expression_reference(setup_db):
     assert author_expr.parent.table is Book and author_expr.parent.path == ()
 
 
+def test_table_expression_isnull_relation_uses_fk_column(setup_db):
+    """TableExpression._isnull on a relation uses parent's FK column for IS NULL / IS NOT NULL."""
+    class Author(Table, with_timestamps=True):
+        name: str
+
+    class Book(Table, with_timestamps=True):
+        title: str
+        author: Author | None = None
+
+    author_expr = Book.get_column_expression("author")
+    is_null_expr = author_expr._isnull(True)
+    assert "author_id" in is_null_expr.sql
+    assert "IS NULL" in is_null_expr.sql
+    is_not_null_expr = author_expr._isnull(False)
+    assert "author_id" in is_not_null_expr.sql
+    assert "IS NOT NULL" in is_not_null_expr.sql
+
+
 def test_table_expression_sql_declarations_root(setup_db):
     class User(Table, with_timestamps=True):
         name: str

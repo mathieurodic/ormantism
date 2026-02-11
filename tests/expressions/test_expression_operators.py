@@ -200,6 +200,63 @@ def test_expression_is_not_and_is_not_null(setup_db):
     assert not_null.sql == "user.name IS NOT NULL"
 
 
+def test_expression_isnull_both_branches(setup_db):
+    """Expression._isnull(True) -> is_null(), _isnull(False) -> is_not_null()."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.get_column_expression("name")
+    is_null_expr = col._isnull(True)
+    assert is_null_expr.symbol == "IS NULL"
+    is_not_null_expr = col._isnull(False)
+    assert is_not_null_expr.symbol == "IS NOT NULL"
+
+
+def test_expression_iexact_string_and_non_string(setup_db):
+    """Expression._iexact: string uses LOWER(expr)=lower(value), non-string uses expr == value."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.get_column_expression("name")
+    # string: LOWER(col) = value.lower()
+    e1 = col._iexact("Hello")
+    assert "LOWER" in e1.sql
+    assert e1.values == ("hello",)
+    # non-string: col == value
+    e2 = col._iexact(42)
+    assert e2.symbol == "="
+    assert e2.values == (42,)
+
+
+def test_expression_between_tuple_and_two_args(setup_db):
+    """Expression.between accepts (low, high) or two arguments."""
+    class User(Table, with_timestamps=True):
+        x: int = 0
+
+    col = User.get_column_expression("x")
+    e1 = col.between((5, 15))
+    assert e1.symbol == "AND"
+    assert e1.values == (5, 15)
+    e2 = col.between(5, 15)
+    assert e2.symbol == "AND"
+    assert e2.values == (5, 15)
+
+
+def test_expression_string_methods_lower_upper_trim(setup_db):
+    """Expression.lower, upper, trim, ltrim, rtrim return FunctionExpression."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.get_column_expression("name")
+    assert col.lower().symbol == "LOWER"
+    assert col.upper().symbol == "UPPER"
+    assert col.trim().symbol == "TRIM"
+    assert col.ltrim().symbol == "LTRIM"
+    assert col.rtrim().symbol == "RTRIM"
+    assert "LOWER" in col.lower().sql
+    assert "UPPER" in col.upper().sql
+
+
 def test_expression_like_methods(setup_db):
     """startswith, contains, endswith, like and their i* variants return LikeExpression with correct flags."""
     class User(Table, with_timestamps=True):

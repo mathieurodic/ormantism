@@ -105,3 +105,21 @@ def test_argumented_expression_dialect_continues_when_arg_dialect_raises():
     expr = NaryOperatorExpression(symbol="=", arguments=(fake, 1))
     with pytest.raises(AttributeError, match="_dialect"):
         _ = expr._dialect
+
+
+def test_argumented_expression_dialect_continue_twice_then_raise():
+    """ArgumentedExpression._dialect: two args that raise AttributeError hit except/continue twice then raise."""
+    class FakeExpr(Expression):
+        @property
+        def sql(self):
+            return "?"
+
+        @property
+        def _dialect(self):
+            raise AttributeError("_dialect")
+
+    fake1 = FakeExpr.model_construct()
+    fake2 = FakeExpr.model_construct()
+    expr = NaryOperatorExpression(symbol="=", arguments=(fake1, fake2))
+    with pytest.raises(AttributeError, match="_dialect"):
+        _ = expr._dialect

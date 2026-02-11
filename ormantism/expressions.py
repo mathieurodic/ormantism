@@ -66,6 +66,26 @@ class Expression(BaseModel):
         """Build an IS NOT NULL expression."""
         return UnaryOperatorExpression(symbol="IS NOT NULL", arguments=(self,), postfix=True)
 
+    def _isnull(self, isnull: bool) -> UnaryOperatorExpression:
+        """Build IS NULL or IS NOT NULL according to the boolean (for where(**{field__isnull: True/False}))."""
+        return self.is_null() if isnull else self.is_not_null()
+
+    def _iexact(self, value: Any) -> NaryOperatorExpression:
+        """Case-insensitive exact match (Django's iexact): LOWER(expr) = LOWER(value) for strings."""
+        if isinstance(value, str):
+            return FunctionExpression(symbol="LOWER", arguments=(self,)) == value.lower()
+        return self == value
+
+    def between(self, low: Any, high: Any|None = None) -> NaryOperatorExpression:
+        """Inclusive range: (expr >= low) & (expr <= high). Used for Django-style value__range=(low, high)."""
+        if high is None:
+            assert isinstance(low, (tuple, list)), "low must be a tuple or list"
+            assert len(low) == 2, "low must be a tuple or list of two values"
+            low, high = low
+        else:
+            assert isinstance(high, (int, float)), "high must be a number"
+        return (self >= low) & (self <= high)
+
     def __not__(self) -> Expression:
         """Build a NOT expression."""
         return UnaryOperatorExpression(symbol="NOT", arguments=(self,))
@@ -150,6 +170,26 @@ class Expression(BaseModel):
         """Build a case-insensitive substring LIKE expression."""
         return LikeExpression(symbol="LIKE", arguments=(self, substring), case_insensitive=True)
 
+    def lower(self) -> FunctionExpression:
+        """Build a LOWER function call."""
+        return FunctionExpression(symbol="LOWER", arguments=(self,))
+
+    def upper(self) -> FunctionExpression:
+        """Build a UPPER function call."""
+        return FunctionExpression(symbol="UPPER", arguments=(self,))
+
+    def trim(self) -> FunctionExpression:
+        """Build a TRIM function call."""
+        return FunctionExpression(symbol="TRIM", arguments=(self,))
+
+    def ltrim(self) -> FunctionExpression:
+        """Build a LTRIM function call."""
+        return FunctionExpression(symbol="LTRIM", arguments=(self,))
+
+    def rtrim(self) -> FunctionExpression:
+        """Build a RTRIM function call."""
+        return FunctionExpression(symbol="RTRIM", arguments=(self,))
+
 
 class ArgumentedExpression(Expression):
     """Base for expressions that have a symbol and a tuple of arguments.
@@ -188,11 +228,11 @@ class ArgumentedExpression(Expression):
     def _dialect(self):
         """Dialect from the first argument that has one (for use in e.g. self._dialect.f.concat(...))."""
         for a in self.arguments:
-            if isinstance(a, Expression) and hasattr(a, "_dialect"):
+            if isinstance(a, Expression):
                 try:
                     return a._dialect
-                except AttributeError:
-                    continue
+                except NotImplementedError:
+                    pass
         raise AttributeError("_dialect")
 
 
@@ -245,6 +285,7 @@ class LikeExpression(ArgumentedExpression):
     @property
     def sql(self) -> str:
         """Build (column LIKE pattern_expr) so .sql and .values stay in sync."""
+        assert len(self.arguments) == 2, "LikeExpression must have two arguments"
         haystack = self.arguments[0]
         needle = (
             self._dialect.f.escape_for_like(self.arguments[1])
@@ -262,11 +303,18 @@ class LikeExpression(ArgumentedExpression):
         if self.fuzzy_end:
             needle = self._dialect.f.concat(needle, "%")
         sql = NaryOperatorExpression(symbol="LIKE", arguments=(haystack, needle)).sql
-        return sql + " ESCAPE '\\'" if self.escape_needle else sql
+        return sql
 
     @property
     def values(self) -> tuple[Any, ...]:
-        return NaryOperatorExpression(symbol="LIKE", arguments=(self.arguments[0], self.arguments[1])).values
+        """Bound values for the composed LIKE (same composition as .sql so placeholder count matches)."""
+        result = list(self._argument_to_values(self.arguments[0]))
+        if self.fuzzy_start:
+            result.append("%")
+        result.extend(self._argument_to_values(self.arguments[1]))
+        if self.fuzzy_end:
+            result.append("%")
+        return tuple(result)
 
 
 class TableExpression(Expression):
@@ -300,6 +348,15 @@ class TableExpression(Expression):
         if name.startswith("_"):
             raise AttributeError(name)
         return self.get_column_expression(name)
+
+    def _isnull(self, isnull: bool) -> UnaryOperatorExpression:
+        """For a relation table expression, use the parent's FK column for IS NULL / IS NOT NULL."""
+        if self.parent is not None and self.path:
+            field = self.parent.table._get_field(self.path[-1])
+            if field.is_reference:
+                fk_col = self.parent.get_column_expression(field.column_name)
+                return fk_col._isnull(isnull)
+        return super()._isnull(isnull)
 
     @property
     def path_str(self) -> str:
