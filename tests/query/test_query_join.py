@@ -18,8 +18,8 @@ def test_join_tree_non_reference_path_builds_without_join(setup_db):
         parent: A | None = None
 
     q = Query(table=B).select(B.label)
-    rows, column_names = q._execute_with_column_names(q.sql, q.values)
-    assert "label" in q.sql or any("label" in a for a in column_names)
+    rows = q.execute(q.sql, q.values, rows_as_dicts=True)
+    assert "label" in q.sql or (rows and "label" in rows[0])
 
 
 def test_join_tree_generic_table_path_raises(setup_db):

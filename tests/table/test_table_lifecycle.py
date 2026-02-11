@@ -52,35 +52,27 @@ class TestOnAfterCreatePaths:
         inst.on_after_create({})
         assert inst.id is not None
 
-    def test_execute_returning_sets_returned_values_on_instance(self, setup_db):
-        """_execute_returning runs SQL with RETURNING and sets values on self (lines 175-176)."""
+    def test_insert_sets_id_and_makes_readonly_lazy(self, setup_db):
+        """Query.insert returns id and marks read-only fields lazy."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        A._create_table()
-        A._add_columns()
-        inst = A.__new__(A)
-        inst.__dict__.update({"name": "direct"})
-        tbl = A._get_table_name()
-        inst._execute_returning(
-            f"INSERT INTO {tbl} (name) VALUES (?)",
-            ["direct"],
-            for_insertion=True,
-        )
-        assert inst.id is not None
-        assert inst.name == "direct"
+        a = A(name="direct")
+        assert a.id is not None
+        assert a.name == "direct"
 
-    def test_execute_returning_applies_default_when_db_returns_null(self, setup_db):
+    def test_insert_applies_defaults_for_fields_not_in_init_data(self, setup_db):
+        """Fields with defaults not in init_data get default before insert."""
         class A(Table, with_timestamps=True):
             name: str = ""
             optional: int | None = 42
 
-        a = A(name="x", optional=None)
+        a = A(name="x")
         assert a.optional == 42
 
 
 class TestOnBeforeUpdatePaths:
-    """Test on_before_update branches (empty set_statement, no primary key)."""
+    """Test on_before_update branches (empty set_statement)."""
 
     def test_update_empty_set_statement_returns_early(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -88,17 +80,6 @@ class TestOnBeforeUpdatePaths:
 
         a = A(name="x")
         a.on_before_update({"name": "x"})
-
-    def test_update_without_primary_key_raises(self, setup_db):
-        from unittest.mock import patch
-
-        class A(Table, with_timestamps=True):
-            name: str = ""
-
-        a = A(name="x")
-        with patch("ormantism.query._WithPrimaryKey", type("_FakePK", (), {})):
-            with pytest.raises(NotImplementedError):
-                a.on_before_update({"name": "z"})
 
 
 class TestLoadOrCreate:

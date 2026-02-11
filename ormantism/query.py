@@ -51,7 +51,6 @@ _WHERE_LOOKUP_MAP: dict[str, str] = {
     "ilike": "ilike",
 }
 from .table_mixins import (
-    _WithPrimaryKey,
     _WithSoftDelete,
     _WithCreatedAtTimestamp,
     _WithTimestamps,
@@ -130,94 +129,6 @@ def add_columns(model: type[Table]) -> None:
             except sqlite3.OperationalError as error:
                 if "duplicate column name" not in error.args[0]:
                     raise
-
-
-def apply_returning(
-    instance: Table,
-    sql: str,
-    parameters: Optional[tuple[Any, ...] | list[Any]] = None,
-    for_insertion: bool = False,
-) -> None:
-    """Execute SQL with RETURNING and set parsed values on the instance.
-
-    For INSERT: returns id (required) plus non-read-only fields with defaults
-    (for applying default when DB returns null). Other read-only fields become
-    lazy and fetch on first access.
-    """
-    if parameters is None:
-        parameters = []
-    cls = instance.__class__
-    returned_fields = ["id"] if for_insertion else []
-    if for_insertion:
-        for name, field in cls._get_fields().items():
-            if (
-                not field.is_reference
-                and field.default is not None
-                and name not in cls._READ_ONLY_FIELDS
-                and name not in returned_fields
-            ):
-                returned_fields.append(name)
-    if returned_fields:
-        sql += "\nRETURNING " + ", ".join(returned_fields)
-        rows = Query(table=cls).execute(sql, list(parameters), ensure_structure=True)
-        for name, value in zip(returned_fields, rows[0]):
-            field = cls._get_field(name)
-            parsed_value = field.parse(value)
-            if parsed_value is None and field.default is not None:
-                parsed_value = field.default
-            object.__setattr__(instance, name, parsed_value)
-        if for_insertion:
-            cls._mark_readonly_lazy(instance)
-
-
-def update_instance(instance: Table, new_data: dict) -> None:
-    """Apply changes to the database (UPDATE). Read-only fields become lazy and fetch on access."""
-    instance.check_read_only(new_data)
-    cls = instance.__class__
-    if not isinstance(instance, _WithPrimaryKey):
-        raise NotImplementedError("Update requires a primary key")
-    pk = getattr(instance, "id", None)
-    if pk is None:
-        raise NotImplementedError("Update requires instance.id to be set")
-    Query(table=cls).where(id=pk).update(**new_data)
-    cls._mark_readonly_lazy(instance)
-
-
-def delete_instance(instance: Table) -> None:
-    """Delete the row (soft delete if _WithSoftDelete, else hard delete)."""
-    cls = instance.__class__
-    tbl = cls._get_table_name()
-    if isinstance(instance, _WithSoftDelete):
-        Query(table=cls).execute(
-            f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
-            [instance.id],
-            ensure_structure=True,
-        )
-    else:
-        Query(table=cls).execute(f"DELETE FROM {tbl} WHERE id = ?", [instance.id], ensure_structure=True)
-
-
-def _column_name_for_path(model: type[Table], path: list[str]) -> str:
-    """Return the database column name for the given path (e.g. ['books','title'] -> 'title')."""
-    if not path:
-        return "id"
-    if len(path) == 1:
-        return model._get_field(path[0]).column_name
-    parent_path, name = path[:-1], path[-1]
-    for segment in parent_path:
-        model = model._get_field(segment).reference_type
-    return model._get_field(name).column_name
-
-
-def _to_order_expression(table: type[Table], order: OrderExpression | ColumnExpression | TableExpression) -> OrderExpression:
-    """Normalize an order spec to OrderExpression (for storage)."""
-    if isinstance(order, OrderExpression):
-        return order
-    if isinstance(order, ColumnExpression):
-        return OrderExpression(column_expression=order, desc=False)
-    if isinstance(order, TableExpression):
-        return OrderExpression(column_expression=order.get_column_expression("id"), desc=False)
-    raise TypeError(f"order_by requires OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
 
 
 def _select_paths_from_expressions(
@@ -349,8 +260,9 @@ class Query(BaseModel):
         sql: str,
         parameters: Optional[tuple[Any, ...] | list[Any]] = None,
         ensure_structure: bool = True,
-    ) -> list[tuple[Any, ...]]:
-        """Run raw SQL and return raw rows (low-level).
+        rows_as_dicts: bool = False,
+    ):
+        """Run raw SQL and return rows (low-level).
 
         For query results as Table instances, use iteration, all(), get(), or first()
         instead. This method optionally ensures table structure and uses the table's connection.
@@ -359,38 +271,16 @@ class Query(BaseModel):
             sql: Full SQL statement.
             parameters: Bound parameters for placeholders; default ().
             ensure_structure: If True, ensure table and columns exist before running.
+            rows_as_dicts: If True, return list of dicts; otherwise list of tuples.
 
         Returns:
-            List of raw row tuples from cursor.fetchall(); not Table instances.
+            List of row tuples or list of row dicts, depending on rows_as_dicts.
         """
         if parameters is None:
             parameters = ()
         if ensure_structure:
             self.ensure_table_structure()
-        return self._connection.execute(sql, parameters)
-
-    def _execute_with_column_names(
-        self,
-        sql: str,
-        parameters: tuple[Any, ...] | list[Any],
-    ) -> tuple[list[tuple[Any, ...]], list[str]]:
-        """Execute SELECT and return (rows, column_names). Column names come from cursor.description (AS aliases)."""
-        if not parameters:
-            parameters = ()
-        self.ensure_table_structure()
-        return self._connection.execute_with_column_names(sql, parameters)
-
-    def execute_returning(
-        self,
-        sql: str,
-        parameters: Optional[tuple[Any, ...]] = None,
-        for_insertion: bool = False,
-    ) -> list[tuple[Any, ...]]:
-        """Run SQL and return raw row tuples (low-level; not Table instances).
-
-        For SELECT results as Table instances, use iteration, all(), get(), or first().
-        """
-        return self.execute(sql, parameters)
+        return self._connection.execute(sql, parameters, rows_as_dicts=rows_as_dicts)
 
     def clone_query_with(self, **changes) -> Query:
         """Return a new Query with the same state except for the given overrides.
@@ -790,9 +680,8 @@ class Query(BaseModel):
     def __iter__(self) -> Iterable[Table]:
         """Execute the query and yield each row as a Table instance (self.table)."""
         self.table._ensure_lazy_loaders()
-        raw_rows, column_names = self._execute_with_column_names(self.sql, self.values)
-        for row in raw_rows:
-            row_dict = dict(zip(column_names, row))
+        rows = self.execute(self.sql, self.values, rows_as_dicts=True)
+        for row_dict in rows:
             yield self.instance_from_row(row_dict)
 
     def all(self, limit: Optional[int] = None) -> list[Table]:
@@ -839,6 +728,16 @@ class Query(BaseModel):
         values = list(set_data.values())
         values.extend(self.values)
         self.execute(sql, tuple(values))
+
+    def delete(self) -> None:
+        """Delete all rows matched by this query (soft delete if _WithSoftDelete, else hard delete)."""
+        tbl = self.table._get_table_name()
+        if issubclass(self.table, _WithSoftDelete):
+            sql = f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP{self.sql_where}"
+            self.execute(sql, self.values)
+        else:
+            sql = f"DELETE FROM {tbl}{self.sql_where}"
+            self.execute(sql, self.values)
 
     def get(self, ensure_one_result: bool = False) -> Optional[Table]:
         """Return a single Table instance (self.table) or None.
@@ -946,13 +845,17 @@ class Query(BaseModel):
             tbl = cls._get_table_name()
             sql = (
                 f"INSERT INTO {tbl} ({', '.join(formatted_data.keys())})\n"
-                f"VALUES ({', '.join('?' for _ in formatted_data.values())})"
+                f"VALUES ({', '.join('?' for _ in formatted_data.values())})\n"
+                "RETURNING id"
             )
-            apply_returning(instance, sql, list(formatted_data.values()), for_insertion=True)
+            rows = self.execute(sql, list(formatted_data.values()), ensure_structure=True)
         else:
             tbl = cls._get_table_name()
-            sql = f"INSERT INTO {tbl} DEFAULT VALUES"
-            apply_returning(instance, sql, [], for_insertion=True)
+            sql = f"INSERT INTO {tbl} DEFAULT VALUES\nRETURNING id"
+            rows = self.execute(sql, [], ensure_structure=True)
+        id_field = cls._get_field("id")
+        object.__setattr__(instance, "id", id_field.parse(rows[0][0]))
+        instance._mark_readonly_lazy()
 
         for name, field in cls._get_fields().items():
             if (

@@ -61,8 +61,9 @@ class Table(metaclass=TableMeta):
     # UPDATE
     def on_before_update(self, new_data):
         """Apply changes to database."""
-        from . import query
-        query.update_instance(self, new_data)
+        self.check_read_only(new_data)
+        self.q().where(id=self.id).update(**new_data)
+        self._mark_readonly_lazy()
 
     # INSERT or SELECT / UPDATE
     @classmethod
@@ -169,11 +170,6 @@ class Table(metaclass=TableMeta):
                         statements.append(stmt)
         return statements
 
-    def _execute_returning(self, sql: str, parameters=None, for_insertion=False):
-        """Execute SQL with RETURNING and set parsed values on self."""
-        from . import query
-        query.apply_returning(self, sql, parameters, for_insertion=for_insertion)
-
     @classmethod
     def _create_table(cls, created=None):
         """Create the table and referenced tables if they do not exist."""
@@ -247,8 +243,7 @@ class Table(metaclass=TableMeta):
     # DELETE
     def delete(self):
         """Delete the row (soft delete if _WithSoftDelete, else hard delete)."""
-        from . import query
-        query.delete_instance(self)
+        self.q().where(id=self.id).delete()
 
     # SELECT
     @classmethod
@@ -429,9 +424,9 @@ class Table(metaclass=TableMeta):
                 cls._add_lazy_readonly_loader(name)
         cls._has_lazy_readonly_loaders = True
 
-    @classmethod
-    def _mark_readonly_lazy(cls, instance: "Table") -> None:
+    def _mark_readonly_lazy(self) -> None:
         """Mark read-only fields (except id) as lazy; values will fetch on first access."""
+        cls = self.__class__
         cls._ensure_lazy_readonly_loaders()
         lazy_names = {
             n for n in getattr(cls, "_READ_ONLY_FIELDS", ())
@@ -439,9 +434,9 @@ class Table(metaclass=TableMeta):
         }
         if not lazy_names:
             return
-        instance._lazy_readonly = getattr(instance, "_lazy_readonly", set()) | lazy_names
+        self._lazy_readonly = getattr(self, "_lazy_readonly", set()) | lazy_names
         for name in lazy_names:
-            instance.__dict__.pop(name, None)
+            self.__dict__.pop(name, None)
 
 
 # Re-export so existing imports from ormantism.table still work

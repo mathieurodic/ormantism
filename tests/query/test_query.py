@@ -510,18 +510,17 @@ class TestQueryUpdate:
             q.update(id=999)
 
 
-class TestQueryExecuteReturning:
-    """Test execute_returning."""
+class TestQueryExecute:
+    """Test execute returns rows."""
 
-    def test_execute_returning_returns_rows(self, setup_db):
+    def test_execute_returns_rows(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
         a = A(name="r")
         tbl = A._get_table_name()
         q = Query(table=A)
-        # SQLite doesn't support RETURNING in all versions; just run a SELECT
-        rows = q.execute_returning(f"SELECT id, name FROM {tbl} WHERE id = ?", (_pk(a),))
+        rows = q.execute(f"SELECT id, name FROM {tbl} WHERE id = ?", (_pk(a),))
         assert len(rows) == 1
         assert rows[0][0] == a.id
         assert rows[0][1] == "r"
@@ -1069,7 +1068,7 @@ class TestInstanceFromRowAndHydrationCoverage:
 
 
 class TestOrderByTypeError:
-    """order_by with invalid type raises TypeError (covers _to_order_expression raise)."""
+    """order_by with invalid type raises TypeError."""
 
     def test_order_by_invalid_type_raises(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -1090,7 +1089,7 @@ class TestOrderByTypeError:
         assert "id" in sql
 
     def test_order_by_relation_table_expression(self, setup_db):
-        """order_by(TableExpression for relation) uses that table's PK (query.py ~662)."""
+        """order_by(TableExpression for relation) uses that table's PK."""
         class B(Table, with_timestamps=True):
             title: str = ""
 
@@ -1101,28 +1100,6 @@ class TestOrderByTypeError:
         sql = q.sql
         assert "ORDER BY" in sql
         assert "book" in sql or "id" in sql
-
-    def test_to_order_expression_table_expression_direct(self, setup_db):
-        """_to_order_expression with TableExpression (350-357) - called directly."""
-        from ormantism.expressions import OrderExpression
-        from ormantism.query import _to_order_expression
-
-        class A(Table, with_timestamps=True):
-            name: str = ""
-
-        o = _to_order_expression(A, A._expression)
-        assert o.column_expression is not None
-        assert o.column_expression.path_str == "id"
-
-        o2 = _to_order_expression(A, o)
-        assert o2 is o
-
-        col = A.get_column_expression("name")
-        o3 = _to_order_expression(A, col)
-        assert o3.column_expression is col
-
-        with pytest.raises(TypeError, match="OrderExpression, ColumnExpression, or TableExpression"):
-            _to_order_expression(A, 123)
 
 
 class TestSelectWithNoArguments:
@@ -1141,9 +1118,9 @@ class TestSelectWithNoArguments:
 
 
 class TestUpdateAndDeleteInstanceCoverage:
-    """update_instance and delete_instance (soft and hard) via save/delete."""
+    """on_before_update and Query.delete() (soft and hard) via save/delete."""
 
-    def test_assign_after_create_calls_update_instance(self, setup_db):
+    def test_assign_after_create_calls_on_before_update(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
@@ -1208,23 +1185,6 @@ class TestInsertInstanceCoverage:
         assert row.value == 42
 
 
-class TestColumnNameForPath:
-    """_column_name_for_path with path length > 1 (324, 329-336)."""
-
-    def test_column_name_for_path_nested_returns_column_name(self, setup_db):
-        from ormantism.query import _column_name_for_path
-
-        class B(Table, with_timestamps=True):
-            title: str = ""
-
-        class A(Table, with_timestamps=True):
-            book: B | None = None
-
-        assert _column_name_for_path(A, ["book", "title"]) == "title"
-        assert _column_name_for_path(A, ["book"]) == "book_id"
-        assert _column_name_for_path(A, []) == "id"
-
-
 class TestEnsureTableStructureCacheCoverage:
     """Query.ensure_table_structure early return when _ensured_table_structure is set."""
 
@@ -1241,19 +1201,14 @@ class TestEnsureTableStructureCacheCoverage:
         assert row.name == "x"
 
 
-class TestApplyReturningParametersNone:
-    """apply_returning with parameters=None uses [] (176-177)."""
+class TestInsertReturningId:
+    """Query.insert returns id and marks read-only lazy."""
 
-    def test_apply_returning_parameters_none(self, setup_db):
-        from ormantism.query import apply_returning
-
+    def test_insert_sets_id(self, setup_db):
         class A(Table, with_timestamps=False):
             name: str = "a"
 
-        Query(table=A).ensure_table_structure()
-        a = A.__new__(A)
-        a.__dict__.update({"name": "a"})
-        apply_returning(a, "INSERT INTO a DEFAULT VALUES", None, for_insertion=True)
+        a = A(name="a")
         assert a.id == 1
 
 
@@ -1293,25 +1248,21 @@ class TestVersionedInsertBranches:
 
 
 class TestUpdateAndDeleteInstanceDirect:
-    """Direct update_instance and delete_instance calls (278, 287, 291, 302-315)."""
+    """Direct on_before_update and Query.delete() calls."""
 
     def test_update_instance_direct(self, setup_db):
-        from ormantism.query import update_instance
-
         class A(Table, with_timestamps=True):
             name: str = ""
 
         a = A(name="first")
         assert a.id == 1
-        update_instance(a, {"name": "second"})
+        a.on_before_update({"name": "second"})
         loaded = A.load(id=1)
         assert loaded.id == 1
         assert loaded.name == "second"
 
     def test_update_instance_empty_process_data_returns_early(self, setup_db):
-        """update_instance when process_data returns {} hits early return (287)."""
-        from ormantism.query import update_instance
-
+        """on_before_update when process_data returns {} hits early return (287)."""
         _empty = [False]
 
         class A(Table, with_timestamps=True):
@@ -1327,15 +1278,13 @@ class TestUpdateAndDeleteInstanceDirect:
         assert a.id == 1
         _empty[0] = True
         try:
-            update_instance(a, {"name": "y"})
+            a.on_before_update({"name": "y"})
         finally:
             _empty[0] = False
         loaded = A.load(id=1)
         assert loaded.name == "x"
 
     def test_delete_instance_soft_then_hard(self, setup_db):
-        from ormantism.query import delete_instance
-
         class Soft(Table, with_timestamps=True):
             name: str = ""
 
@@ -1344,13 +1293,13 @@ class TestUpdateAndDeleteInstanceDirect:
 
         s = Soft(name="s")
         assert s.id == 1
-        delete_instance(s)
+        Query(table=Soft).where(id=s.id).delete()
         assert Query(table=Soft).first() is None
         assert Query(table=Soft).include_deleted().where(Soft.pk == 1).first().id == 1
 
         h = Hard(name="h")
         assert h.id == 1
-        delete_instance(h)
+        Query(table=Hard).where(id=h.id).delete()
         assert Query(table=Hard).first() is None
 
 

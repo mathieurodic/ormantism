@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class Connection(BaseModel):
-    """Holds a database URL and dialect and provides execute/execute_with_column_names against it."""
+    """Holds a database URL and dialect and provides execute against it."""
 
     url: str
     name: str = "default"
@@ -40,32 +40,30 @@ class Connection(BaseModel):
         self,
         sql: str,
         parameters: Optional[tuple[Any, ...] | list[Any]] = None,
-    ) -> list[tuple[Any, ...]]:
-        """Run SQL and return fetched rows."""
-        from .transaction import transaction
-        if parameters is None:
-            parameters = ()
-        with transaction(connection_name=self.name) as t:
-            cursor = t.execute(sql, parameters)
-            result = cursor.fetchall()
-            cursor.close()
-        return result
+        rows_as_dicts: bool = False,
+    ):
+        """Run SQL and return fetched rows.
 
-    def execute_with_column_names(
-        self,
-        sql: str,
-        parameters: Optional[tuple[Any, ...] | list[Any]] = None,
-    ) -> tuple[list[tuple[Any, ...]], list[str]]:
-        """Execute SQL and return (rows, column_names). Column names from cursor.description."""
+        Args:
+            sql: SQL statement.
+            parameters: Bound parameters for placeholders; default ().
+            rows_as_dicts: If True, return list of dicts (column names as keys);
+                otherwise return list of tuples.
+
+        Returns:
+            List of row tuples or list of row dicts, depending on rows_as_dicts.
+        """
         from .transaction import transaction
         if parameters is None:
             parameters = ()
         with transaction(connection_name=self.name) as t:
             cursor = t.execute(sql, parameters)
-            column_names = [d[0] for d in cursor.description] if cursor.description else []
+            column_names = [d[0] for d in cursor.description] if (rows_as_dicts and cursor.description) else []
             rows = cursor.fetchall()
             cursor.close()
-        return rows, column_names
+        if rows_as_dicts:
+            return [dict(zip(column_names, row)) for row in rows]
+        return rows
 
 
 _connections: dict[str, Connection] = {}
