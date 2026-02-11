@@ -292,6 +292,26 @@ class TestQueryWhereKwargsAndFilter:
         assert len(rows_not_null) == 1
         assert rows_not_null[0].book is not None
 
+    def test_where_generic_table_ref_filters_by_id_and_table(self, setup_db):
+        """where(ref=instance) for generic Table ref filters by both ref_id and ref_table."""
+        class Ref1(Table, with_timestamps=True):
+            foo: int = 0
+
+        class Ref2(Table, with_timestamps=True):
+            bar: int = 0
+
+        class Ptr(Table, with_timestamps=True):
+            ref: Table | None = None
+
+        r1 = Ref1(foo=42)
+        r2 = Ref2(bar=101)
+        Ptr(ref=r1)
+        Ptr(ref=r2)
+        row1 = Query(table=Ptr).where(ref=r1).first()
+        row2 = Query(table=Ptr).where(ref=r2).first()
+        assert row1 is not None and row1.ref.id == r1.id and row1.ref.__class__ == Ref1
+        assert row2 is not None and row2.ref.id == r2.id and row2.ref.__class__ == Ref2
+
 
 class TestQueryOrderAndLimit:
     """Test order_by and limit."""

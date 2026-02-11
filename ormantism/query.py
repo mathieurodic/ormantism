@@ -343,6 +343,7 @@ class Query(BaseModel):
                 continue
             # For relation + exact, compare FK to value (pk or instance)
             if isinstance(expr, TableExpression) and lookup == "exact":
+                original_value = value
                 if not isinstance(value, type) and hasattr(value, "_get_table_name") and hasattr(value, "id"):
                     value = getattr(value, "id", value)
                 parent = expr.parent
@@ -351,6 +352,17 @@ class Query(BaseModel):
                     if field.is_reference:
                         fk_col = parent.get_column_expression(field.column_name)
                         result.append(fk_col == value)
+                        # Generic Table ref: also filter by _table so ref_id alone doesn't match another table's row
+                        if (
+                            field.base_type is Table
+                            and original_value is not None
+                            and hasattr(original_value, "_get_table_name")
+                            and not isinstance(original_value, type)
+                        ):
+                            table_col = ColumnExpression(
+                                table_expression=parent, name=f"{field.name}_table"
+                            )
+                            result.append(table_col == original_value._get_table_name())
                         continue
             # Column (or fallback) lookups
             meth = _WHERE_LOOKUP_MAP.get(lookup)

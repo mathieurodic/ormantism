@@ -188,17 +188,6 @@ class TestLoadOrderAndVersioning:
         rows = Doc.load(as_collection=True)
         assert len(rows) >= 2
 
-    def test_load_reverse_order_false_uses_version_order_for_versioned(self, setup_db):
-        """load(reverse_order=False) with _WithVersion uses versioning ORDER BY (lines 290-296)."""
-        class Doc(Table, versioning_along=("name",)):
-            name: str = ""
-            content: str = ""
-
-        Doc(name="v1", content="first")
-        Doc(name="v1", content="second")
-        rows = Doc.load(reverse_order=False, as_collection=True)
-        assert len(rows) >= 2
-
     def test_load_order_by_id_when_no_timestamps_no_version(self, setup_db):
         class A(Table, with_timestamps=False):
             name: str = ""

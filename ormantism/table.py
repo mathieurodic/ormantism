@@ -214,8 +214,8 @@ class Table(metaclass=TableMeta):
         return q
 
     @classmethod
-    def load(cls, reverse_order: bool = True, as_collection: bool = False,
-             with_deleted=False, preload: str | list[str] = None,
+    def load(cls, as_collection: bool = False,
+             with_deleted=False, preload: str | list[str] = [],
              **criteria) -> "Table":
         """Load by criteria; supports preload paths and optional soft-delete."""
         warnings.warn(
@@ -223,43 +223,14 @@ class Table(metaclass=TableMeta):
             DeprecationWarning,
             stacklevel=2,
         )
-        from .expressions import ColumnExpression
-        preload_list = [preload] if isinstance(preload, str) else (preload or [])
-        root = cls._root_expression()
         q = cls.q()
-        if preload_list:
-            select_exprs = [root.get_column_expression("id")]
-            for p in preload_list:
-                e = q._resolve_user_path(p)
-                if e is not None:
-                    select_exprs.append(e)
-            q = q.clone_query_with(select_expressions=select_exprs)
+        preload_list = [preload] if isinstance(preload, str) else preload
+        for p in preload_list:
+            q = q.select(p)
         if with_deleted and issubclass(cls, _WithSoftDelete):
             q = q.include_deleted()
         if criteria:
-            stmts = []
-            for k, v in criteria.items():
-                field = cls._get_field(k)
-                if field.is_reference and field.secondary_type is None:
-                    col = root.get_column_expression(field.column_name)
-                    val = v.id if (hasattr(v, "_get_table_name") and not isinstance(v, type)) else v
-                    stmts.append(col == val)
-                    # Generic ref (Table): also filter by _table so ref_id alone doesn't match another table's row
-                    if field.base_type is Table and v is not None and hasattr(v, "_get_table_name") and not isinstance(v, type):
-                        table_col = ColumnExpression(table_expression=root, name=f"{k}_table")
-                        stmts.append(table_col == v._get_table_name())
-                else:
-                    stmts.append(getattr(root, k) == v)
-            q = q.where(*stmts)
-        if not reverse_order:
-            q = q.clone_query_with(order_by_expressions=[])
-            if issubclass(cls, _WithTimestamps):
-                q = q.order_by(root.get_column_expression("created_at"))
-            elif issubclass(cls, _WithVersion):
-                along = list(getattr(cls, "_VERSIONING_ALONG", ())) + ["version"]
-                q = q.order_by(*[root.get_column_expression(a) for a in along])
-            else:
-                q = q.order_by(root.get_column_expression("id"))
+            q = q.where(**criteria)
         if as_collection:
             return q.all()
         return q.first()
