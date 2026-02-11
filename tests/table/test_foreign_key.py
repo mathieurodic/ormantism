@@ -1,3 +1,5 @@
+"""Tests for Table foreign key fields: specific refs, generic refs, list refs, and preload/lazy loading."""
+
 from typing import Optional
 
 import pytest
@@ -5,7 +7,7 @@ from pydantic import Field
 from ormantism import Table
 
 
-def test_specific_foreign_key(setup_db):
+def test_specific_foreign_key(setup_db, expect_lazy_loads):
 
     class Node(Table):
         parent: Optional["Node"] = None
@@ -26,6 +28,28 @@ def test_specific_foreign_key(setup_db):
         assert parent.parent.id == grandparent.id
         child = Node.load(name="child", preload=preload)
         assert child.parent.id == parent.id
+    # First iteration (no preload) triggers 2 lazy loads; second (preload) triggers 0
+    expect_lazy_loads.expect(2)
+
+
+@pytest.mark.xfail(reason="load(id=..., preload=[...]) joins but hydration expects nested data; flat row not converted")
+def test_specific_foreign_key_preload_avoids_lazy(setup_db, expect_lazy_loads):
+    """When preloading by id, accessing the relationship must not trigger lazy load."""
+    class Node(Table):
+        parent: Optional["Node"] = None
+        name: str
+
+    grandparent = Node(name="grandparent")
+    parent = Node(name="parent", parent=grandparent)
+    child = Node(name="child", parent=parent)
+    # Load by id with preload so refs are joined and not lazy-loaded
+    loaded_gp = Node.load(id=grandparent.id, preload=["parent"])
+    loaded_parent = Node.load(id=parent.id, preload=["parent"])
+    loaded_child = Node.load(id=child.id, preload=["parent"])
+    assert loaded_gp.parent is None
+    assert loaded_parent.parent.id == grandparent.id
+    assert loaded_child.parent.id == parent.id
+    expect_lazy_loads.expect(0)
 
 
 def test_generic_foreign_key():
@@ -70,7 +94,7 @@ def test_generic_foreign_key():
     assert pointer2.ref.__class__ == Ref1
 
 
-def test_specific_foreign_key_list(setup_db):
+def test_specific_foreign_key_list(setup_db, expect_lazy_loads):
 
     class Parent(Table):
         name: str
@@ -89,6 +113,24 @@ def test_specific_foreign_key_list(setup_db):
     assert isinstance(n3.children, list)
     assert len(n3.children) == 2
     assert isinstance(n3.children[0], Parent)
+    expect_lazy_loads.expect(1)
+
+
+@pytest.mark.skip(reason="preload for list refs in load() not yet supported (join column naming)")
+def test_specific_foreign_key_list_preload_avoids_lazy(setup_db, expect_lazy_loads):
+    """When preloading children, accessing .children must not trigger lazy load."""
+    class Parent(Table):
+        name: str
+        children: list["Parent"] = Field(default_factory=list)
+
+    n1 = Parent(name="node1")
+    n2 = Parent(name="node2")
+    n3 = Parent(name="node3", children=[n1, n2])
+    n3 = Parent.load(name="node3", preload="children")
+    assert isinstance(n3.children, list)
+    assert len(n3.children) == 2
+    assert isinstance(n3.children[0], Parent)
+    expect_lazy_loads.expect(0)
 
 
 def test_generic_foreign_key_list():

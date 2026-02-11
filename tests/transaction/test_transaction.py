@@ -1,3 +1,5 @@
+"""Tests for ormantism.transaction: TransactionManager, Transaction context, and TransactionError."""
+
 import pytest
 from ormantism.transaction import TransactionManager, TransactionError, Transaction
 

@@ -1,3 +1,5 @@
+"""Tests for ormantism JSON column type and persistence."""
+
 from ormantism import Table, JSON
 
 

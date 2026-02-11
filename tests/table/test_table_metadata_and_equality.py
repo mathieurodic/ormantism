@@ -1,0 +1,169 @@
+"""Tests for Table metadata (_get_fields, _get_table_name, _get_field), options inheritance, __eq__, __hash__, __deepcopy__."""
+
+import copy
+import pytest
+from ormantism.table import Table
+
+
+class TestTableMetadata:
+    """Test table metadata and helper methods."""
+
+    def test_table_name_generation(self, setup_db):
+        class MyTestTable(Table):
+            name: str
+
+        assert MyTestTable._get_table_name() == "mytesttable"
+
+    def test_field_information(self, setup_db):
+        class TestTable(Table, with_timestamps=True):
+            name: str
+            value: int = 42
+
+        fields = TestTable._get_fields()
+        non_default_fields = TestTable._get_non_default_fields()
+
+        assert 'name' in fields
+        assert 'value' in fields
+        assert 'id' in fields
+        assert 'created_at' in fields
+        assert 'name' in non_default_fields
+        assert 'value' in non_default_fields
+        assert 'id' not in non_default_fields
+        assert 'created_at' not in non_default_fields
+
+    def test_get_field_by_column_name(self, setup_db):
+        class B(Table, with_timestamps=True):
+            value: int = 0
+
+        class C(Table, with_timestamps=True):
+            links_to: B | None = None
+
+        field = C._get_field("links_to_id")
+        assert field.name == "links_to"
+        assert field.column_name == "links_to_id"
+
+    def test_get_field_raises_for_unknown(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str
+
+        with pytest.raises(KeyError, match="No such field"):
+            A._get_field("nonexistent")
+
+    def test_check_read_only_raises(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str
+
+        a = A(name="x")
+        with pytest.raises(AttributeError, match="read-only"):
+            a.check_read_only({"id": 999})
+        with pytest.raises(AttributeError, match="read-only"):
+            a.check_read_only({"created_at": None})
+
+    def test_process_data_invalid_key_raises(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str
+
+        with pytest.raises(ValueError, match="Invalid key"):
+            A.process_data({"not_a_field": 1})
+
+    def test_load_as_collection(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        A(name="a1")
+        A(name="a2")
+        rows = A.load(as_collection=True)
+        assert isinstance(rows, list)
+        assert len(rows) >= 2
+        for r in rows:
+            assert isinstance(r, A)
+
+
+class TestTableMetaOptions:
+    """Test TableMetaclass options and inheritance."""
+
+    def test_with_created_at_timestamp_only(self, setup_db):
+        class A(Table, with_created_at_timestamp=True, with_timestamps=False):
+            name: str = ""
+
+        assert "created_at" in A._get_fields()
+        assert "deleted_at" not in A._get_fields()
+        assert "updated_at" not in A._get_fields()
+
+    def test_with_updated_at_timestamp_only(self, setup_db):
+        class A(Table, with_updated_at_timestamp=True, with_timestamps=False):
+            name: str = ""
+
+        assert "updated_at" in A._get_fields()
+        assert "created_at" not in A._get_fields()
+        assert "deleted_at" not in A._get_fields()
+
+    def test_inherit_connection_name_from_base(self, setup_db):
+        class Base(Table, connection_name="custom_conn"):
+            name: str = ""
+
+        class Child(Base):
+            value: int = 0
+
+        assert Child._CONNECTION_NAME == "custom_conn"
+
+    def test_inherit_versioning_along_from_base(self, setup_db):
+        class Base(Table, versioning_along=("key",)):
+            key: str = ""
+            body: str = ""
+
+        class Child(Base):
+            extra: str = ""
+
+        assert Child._VERSIONING_ALONG == ("key",)
+
+
+class TestTableEqualityAndCopy:
+    """Test __eq__, __hash__, __deepcopy__."""
+
+    def test_eq_raises_for_different_class(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        class B(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        b = B(name="x")
+        with pytest.raises(ValueError, match="Comparing instances of different classes"):
+            a == b
+
+    def test_eq_same_class_different_hash(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a1 = A(name="a")
+        a2 = A(name="b")
+        assert a1 != a2
+
+    def test_eq_same_class_same_hash(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        loaded = A.load(id=a.id)
+        assert loaded is not None
+        assert a == loaded
+
+    def test_hash(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        s = {a}
+        assert a in s
+        assert hash(a) == hash(a)
+
+    def test_deepcopy_returns_self(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        c = copy.deepcopy(a)
+        assert c is a

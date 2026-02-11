@@ -1,4 +1,4 @@
-"""Tests for ormantism.query.Query and ensure_table_structure."""
+"""Tests for ormantism.query: Query, ensure_table_structure, run_sql, select/where/order/limit, update/delete, instance_from_row, versioning, polymorphic refs."""
 
 import pytest
 from ormantism.table import Table
@@ -771,7 +771,7 @@ class TestInstanceFromRowAndHydrationCoverage:
         assert inst.id == 1
         assert inst.name == "x"
 
-    def test_lazy_list_ref_loads_with_correct_ids(self, setup_db):
+    def test_lazy_list_ref_loads_with_correct_ids(self, setup_db, expect_lazy_loads):
         """Load without preload: list ref is lazy; on access we get instances with correct ids."""
         class Child(Table, with_timestamps=True):
             x: int = 0
@@ -793,6 +793,26 @@ class TestInstanceFromRowAndHydrationCoverage:
         assert ids == [1, 2]
         vals = sorted(k.x for k in kids)
         assert vals == [10, 20]
+        expect_lazy_loads.expect(1)
+
+    @pytest.mark.skip(reason="preload for list refs in load() not yet supported (join column naming)")
+    def test_preload_list_ref_avoids_lazy(self, setup_db, expect_lazy_loads):
+        """Load with preload='kids': accessing kids must not trigger lazy load."""
+        class Child(Table, with_timestamps=True):
+            x: int = 0
+
+        class Parent(Table, with_timestamps=True):
+            kids: list[Child] = []
+
+        c1 = Child(x=10)
+        c2 = Child(x=20)
+        p = Parent(kids=[c1, c2])
+        loaded = Parent.load(id=p.id, preload="kids")
+        assert loaded is not None
+        kids = loaded.kids
+        assert len(kids) == 2
+        assert sorted(k.id for k in kids) == [1, 2]
+        expect_lazy_loads.expect(0)
 
     def test_load_row_with_nullable_ref_none(self, setup_db):
         """Row with ref_id None produces instance with ref=None (reference_id is None branch)."""
@@ -1226,6 +1246,111 @@ class TestPolymorphicListRefHydration:
         assert inst.items[1].id == 2
         assert inst.items[0].x == 10
         assert inst.items[1].x == 20
+
+
+class TestQueryCoverageHelpers:
+    """Targeted tests for query.py branches: _stored_pk, _pk_name, _sql_from_join, insert defaults, list ref no ids."""
+
+    def test_stored_pk_returns_none_when_id_missing_or_expression(self, setup_db):
+        """_stored_pk returns None when instance.id is not in __dict__ or is an Expression (line 201)."""
+        from ormantism.query import _stored_pk
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        assert a.id is not None
+        assert _stored_pk(a) == a.id
+
+        empty = A.__new__(A)
+        empty.__dict__.clear()
+        assert _stored_pk(empty) is None
+
+    def test_pk_name_returns_id_when_no_read_only_fields(self, setup_db):
+        """_pk_name returns 'id' when table has no _READ_ONLY_FIELDS or it is empty (line 321)."""
+        from ormantism.query import _pk_name
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        assert _pk_name(A) == "id"
+        orig = getattr(A, "_READ_ONLY_FIELDS", None)
+        try:
+            A._READ_ONLY_FIELDS = ()
+            assert _pk_name(A) == "id"
+        finally:
+            if orig is not None:
+                A._READ_ONLY_FIELDS = orig
+
+    def test_sql_from_join_empty_returns_empty_string(self):
+        """_sql_from_join([]) returns '' (line 426)."""
+        from ormantism.query import _sql_from_join
+
+        assert _sql_from_join([]) == ""
+
+    def test_insert_instance_applies_default_for_field_not_in_init_data(self, setup_db):
+        """insert_instance sets default on instance for field not in processed_data (lines 251, 275)."""
+        from ormantism.query import insert_instance
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            optional: int = 42
+
+        ensure_table_structure(A)
+        a = A.__new__(A)
+        a.__dict__.update({"name": "x", "id": None})
+        insert_instance(a, {"name": "x"})
+        assert a.id is not None
+        assert getattr(a, "optional", None) == 42
+
+    def test_instance_from_row_list_ref_with_no_ids_key_uses_empty_list(self, setup_db):
+        """When row has no name_ids key, list ref gets references_ids=None then [] (line 769)."""
+        class Child(Table, with_timestamps=True):
+            x: int = 0
+
+        class Parent(Table, with_timestamps=True):
+            kids: list[Child] = []
+
+        ensure_table_structure(Parent)
+        ensure_table_structure(Child)
+        p = Parent()
+        assert p.id == 1
+        tbl = Parent._get_table_name()
+        row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1}
+        root = Parent._root_expression()
+        q = Query(table=Parent).select(root.id)
+        inst = q.instance_from_row(row_dict)
+        assert inst.id == 1
+        assert inst.kids == []
+
+    def test_select_paths_adds_pk_when_not_in_expressions(self, setup_db):
+        """_select_paths_from_expressions adds pk to paths when missing (line 364)."""
+        from ormantism.query import _select_paths_from_expressions
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        root = A._root_expression()
+        paths = _select_paths_from_expressions(A, [root.name])
+        assert "id" in paths
+        assert "name" in paths
+
+    def test_collect_table_expressions_skips_column_expression(self, setup_db):
+        """_collect_table_expressions skips path that resolves to ColumnExpression (line 394)."""
+        from ormantism.query import _collect_table_expressions
+
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        root = A._root_expression()
+        result = _collect_table_expressions(root, ["book.title"])
+        assert len(result) == 2
+        assert result[0].table is A
+        assert result[1].table is B
+        assert result[1].path_str == "book"
 
 
 class TestQueryUpdateEmptySetData:

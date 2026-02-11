@@ -1,3 +1,5 @@
+"""Tests for Table columns with type (e.g. type[BaseModel]) annotations."""
+
 from ormantism import Table
 
 

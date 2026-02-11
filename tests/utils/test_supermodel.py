@@ -298,6 +298,18 @@ def test_supermodel_update_type_field():
     assert m.t is str
 
 
+def test_supermodel_update_non_type_annotation_field_uses_setattr():
+    """update() uses BaseModel.__setattr__ when field annotation is not a type annotation (e.g. Any)."""
+    from typing import Any
+
+    class M(SuperModel):
+        value: Any = None
+
+    m = M()
+    m.update(value=42)
+    assert m.value == 42
+
+
 def test_supermodel_update_triggers_before_and_after():
     before_data = []
     after_data = []

@@ -1,3 +1,5 @@
+"""Tests for ormantism.connection: connect(), _get_connection(), and database URL handling."""
+
 import os
 import pytest
 from ormantism.connection import _get_connection

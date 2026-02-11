@@ -1,4 +1,4 @@
-"""Tests for join-tree behavior (formerly QueryJoin), now integrated into Query."""
+"""Tests for Query JOIN building: join tree, SQL FROM/JOIN, column aliases, and list reference lazy paths."""
 
 from unittest.mock import patch
 import pytest
@@ -85,7 +85,7 @@ def test_join_tree_unsupported_reference_type_raises(setup_db):
             _ = q.sql
 
 
-def test_list_reference_lazy_path(setup_db):
+def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
     """Load without preload: list[ConcreteTable] is stored as lazy."""
     class Child(Table, with_timestamps=True):
         x: int = 0
@@ -104,3 +104,6 @@ def test_list_reference_lazy_path(setup_db):
     assert len(ref_types) == 2
     assert ref_types[0] is Child and ref_types[1] is Child
     assert ref_ids == [c1.id, c2.id]
+    # Access kids triggers one lazy load (loads the list)
+    _ = loaded.kids
+    expect_lazy_loads.expect(1)
