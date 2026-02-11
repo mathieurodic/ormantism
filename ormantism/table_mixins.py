@@ -38,10 +38,31 @@ class _WithUpdatedAtTimestamp(SuperModel):
 
 
 class _WithTimestamps(_WithCreatedAtTimestamp, _WithSoftDelete, _WithUpdatedAtTimestamp):
-    pass
+    """Mixin that adds timestamps and soft delete; default order is by created_at DESC."""
+
+    @classmethod
+    def _transform_query(cls, q):
+        """Add default order by created_at DESC."""
+        if not q.order_by_expressions:
+            root = cls._root_expression()
+            q = q.order_by(root.get_column_expression("created_at").desc)
+        return q
 
 
 class _WithVersion(_WithSoftDelete):
     """Mixin that adds a version counter for optimistic locking."""
 
     version: int = 0
+
+    @classmethod
+    def _transform_query(cls, q):
+        """Add default order by versioning_along columns and version DESC."""
+        if not q.order_by_expressions:
+            along = list(getattr(cls, "_VERSIONING_ALONG", ())) + ["version"]
+            root = cls._root_expression()
+            exprs = []
+            for name in along:
+                col = root.get_column_expression(name)
+                exprs.append(col.desc if name == "version" else col)
+            q = q.order_by(*exprs)
+        return q

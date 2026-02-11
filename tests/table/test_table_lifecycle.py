@@ -144,32 +144,6 @@ class TestLoadOrCreate:
         assert c2.id == c.id
         assert c2.link is not None and c2.link.id == b2.id
 
-    def test_load_or_create_reference_not_in_lazy_joins_raises(self, setup_db):
-        """When loaded has ref in __dict__ (preloaded) but _lazy_joins cleared, we raise (lines 85-87)."""
-        from unittest.mock import patch
-
-        class B(Table, with_timestamps=True):
-            value: int = 0
-
-        class C(Table, with_timestamps=True):
-            name: str = ""
-            link: B | None = None
-
-        c = C(name="z", link=B())
-        real_load = Table.load.__func__
-
-        def load_preload_then_clear_lazy(cls, *args, **kwargs):
-            kwargs["preload"] = ["link"]
-            out = real_load(cls, *args, **kwargs)
-            if out is not None:
-                out._lazy_joins = {}
-            return out
-
-        with patch.object(C, "load", classmethod(load_preload_then_clear_lazy)):
-            other_b = B()
-            with pytest.raises(NotImplementedError, match="Unexpected: reference not in _lazy_joins"):
-                C.load_or_create(_search_fields=("name",), name="z", link=other_b)
-
     def test_load_or_create_polymorphic_ref_tuple_updates(self, setup_db):
         """load_or_create when _lazy_joins[name] is (class, id) and value differs (lines 95-96)."""
         class B1(Table, with_timestamps=True):

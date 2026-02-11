@@ -452,8 +452,9 @@ class TestQueryAllGetFirst:
 
         a = A(name="g")
         q = Query(table=A).where(A.pk == _pk(a))
-        assert q.get() is not None
-        assert q.get().id == a.id
+        row = q.first()
+        assert row is not None
+        assert row.id == a.id
 
     def test_get_ensure_one_result_zero_raises(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -461,7 +462,7 @@ class TestQueryAllGetFirst:
 
         q = Query(table=A).where(A.pk == 999999)
         with pytest.raises(ValueError, match="no results"):
-            q.get(ensure_one_result=True)
+            q.get_one()
 
     def test_get_ensure_one_result_two_raises(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -471,7 +472,7 @@ class TestQueryAllGetFirst:
         A(name="b")
         q = Query(table=A)
         with pytest.raises(ValueError, match="more than one"):
-            q.get(ensure_one_result=True)
+            q.get_one()
 
     def test_get_ensure_one_result_one_returns(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -479,7 +480,7 @@ class TestQueryAllGetFirst:
 
         a = A(name="single")
         q = Query(table=A).where(A.pk == _pk(a))
-        row = q.get(ensure_one_result=True)
+        row = q.get_one()
         assert row is not None
         assert row.id == a.id
 
@@ -1118,7 +1119,7 @@ class TestSelectWithNoArguments:
 
 
 class TestUpdateAndDeleteInstanceCoverage:
-    """on_before_update and Query.delete() (soft and hard) via save/delete."""
+    """on_before_update and Query.delete() (soft and hard)."""
 
     def test_assign_after_create_calls_on_before_update(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -1457,6 +1458,54 @@ class TestQueryCoverageHelpers:
         assert a.id is not None
         assert post_init_called == [True]
 
+    def test_upsert_inserts_when_no_match(self, setup_db):
+        """Query.upsert inserts a new row when no row matches on_conflict."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        a = A.q().upsert(on_conflict=["name"], name="x", value=1)
+        assert a.id is not None
+        assert a.name == "x"
+        assert a.value == 1
+
+    def test_upsert_updates_when_match(self, setup_db):
+        """Query.upsert updates existing row when on_conflict columns match."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        a1 = A.q().upsert(on_conflict=["name"], name="x", value=1)
+        a2 = A.q().upsert(on_conflict=["name"], name="x", value=2)
+        assert a2.id == a1.id
+        assert a2.name == "x"
+        assert a2.value == 2
+
+    def test_upsert_on_conflict_must_be_in_data(self, setup_db):
+        """Query.upsert raises when on_conflict field is not in data."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        with pytest.raises(ValueError, match="on_conflict field .name. must be present"):
+            A.q().upsert(on_conflict=["name"], value=1)
+
+    def test_upsert_without_unique_constraint(self, setup_db):
+        """Query.upsert works for any columns (no UNIQUE required)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            value: int = 0
+
+        a1 = A.q().upsert(on_conflict=["name"], name="x", value=1)
+        assert a1.id is not None
+        assert a1.name == "x"
+        assert a1.value == 1
+
+        a2 = A.q().upsert(on_conflict=["name"], name="x", value=2)
+        assert a2.id == a1.id
+        assert a2.name == "x"
+        assert a2.value == 2
+
     def test_instance_from_row_list_ref_with_no_ids_key_uses_empty_list(self, setup_db):
         """When row has no name_ids key, list ref gets references_ids=None then [] (line 769)."""
         class Child(Table, with_timestamps=True):
@@ -1501,6 +1550,117 @@ class TestQueryCoverageHelpers:
         assert result[0].table is A
         assert result[1].table is B
         assert result[1].path_str == "book"
+
+    def test_collect_table_expressions_skips_non_reference_segment(self, setup_db):
+        """_collect_table_expressions skips path segment that is not a reference (line 168)."""
+        from ormantism.query import _collect_table_expressions
+        from ormantism.expressions import TableExpression
+        from unittest.mock import patch
+
+        class B(Table, with_timestamps=True):
+            name: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        q = Query(table=A)
+        book_te = q._resolve_user_path("book")
+        fake_book_name = TableExpression(parent=book_te, table=B, path=("book", "name"))
+
+        def patched_resolve(path):
+            if path == "book":
+                return book_te
+            if path == "book.name":
+                return fake_book_name
+            return Query._resolve_user_path(q, path)
+
+        with patch.object(q, "_resolve_user_path", patched_resolve):
+            result = _collect_table_expressions(q, ["book.name"])
+        assert len(result) >= 1
+        assert result[0].table is A
+
+    def test_where_unknown_lookup_raises(self, setup_db):
+        """Query.where with lookup that maps to None raises ValueError (lines 358-361)."""
+        from unittest.mock import patch
+        from ormantism.query import _WHERE_LOOKUP_MAP
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        saved = _WHERE_LOOKUP_MAP.get("exact")
+        try:
+            _WHERE_LOOKUP_MAP["exact"] = None
+            with pytest.raises(ValueError, match="Unknown lookup"):
+                Query(table=A).where(name__exact="x")
+        finally:
+            _WHERE_LOOKUP_MAP["exact"] = saved
+
+    def test_select_another_table_raises(self, setup_db):
+        """Query.select with different table class raises ValueError (line 375)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        with pytest.raises(ValueError, match="Cannot select another table"):
+            Query(table=A).select(B)
+
+    def test_order_by_wrong_type_raises(self, setup_db):
+        """Query.order_by with wrong type raises TypeError (line 419)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        with pytest.raises(TypeError, match="order_by requires"):
+            Query(table=A).order_by(42)
+
+    def test_upsert_read_only_field_raises(self, setup_db):
+        """Query.upsert with read-only field raises AttributeError (line 783)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        with pytest.raises(AttributeError, match="read-only attribute"):
+            A.q().upsert(on_conflict=["name"], name="x", id=999)
+
+    def test_insert_empty_instance_uses_default_values_sql(self, setup_db):
+        """Query.insert with empty instance and init_data uses DEFAULT VALUES (line 869)."""
+        class IdOnly(Table, with_timestamps=False):
+            pass
+
+        Query(table=IdOnly).ensure_table_structure()
+        inst = object.__new__(IdOnly)
+        inst.__dict__["id"] = None
+        row = Query(table=IdOnly).insert(instance=inst, init_data={})
+        assert row.id is not None
+
+    def test_instance_from_data_unexpected_reference_type_raises(self, setup_db):
+        """_instance_from_data raises when ref has secondary_type but base_type not list/tuple/set (line 640)."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class B(Table, with_timestamps=True):
+            x: int = 0
+
+        class A(Table, with_timestamps=True):
+            ref: B | None = None
+
+        Query(table=A).ensure_table_structure()
+        Query(table=B).ensure_table_structure()
+        tbl = A._get_table_name()
+        row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1}
+        fake_ref = SimpleNamespace(
+            name="ref",
+            is_reference=True,
+            secondary_type=B,
+            base_type=dict,
+            reference_type=B,
+            column_name="ref_id",
+        )
+        patched_fields = {**A._get_fields(), "ref": fake_ref}
+        with patch.object(A, "_get_fields", return_value=patched_fields):
+            q = Query(table=A)
+            with pytest.raises(ValueError, match="Unexpected reference type"):
+                q.instance_from_row(row_dict)
 
 
 class TestQueryUpdateEmptySetData:

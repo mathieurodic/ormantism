@@ -1,7 +1,6 @@
 """Table model base for ORM CRUD and schema creation."""
 
 import inspect
-import logging
 import warnings
 from typing import ClassVar
 from functools import cache
@@ -19,8 +18,6 @@ from .table_mixins import (
     _WithTimestamps,
     _WithVersion,
 )
-
-logger = logging.getLogger("ormantism")
 
 
 class Table(metaclass=TableMeta):
@@ -50,13 +47,9 @@ class Table(metaclass=TableMeta):
         return self
 
     # INSERT
-    def save(self, init_data: dict):
-        """Persist the instance to the database (INSERT) and rehydrate generated columns."""
-        self.__class__.q().insert(instance=self, init_data=init_data)
-
     def on_after_create(self, init_data: dict):
         """Persist the instance to the database (INSERT) and set generated columns."""
-        self.save(init_data)
+        self.__class__.q().insert(instance=self, init_data=init_data)
 
     # UPDATE
     def on_before_update(self, new_data):
@@ -69,52 +62,11 @@ class Table(metaclass=TableMeta):
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
         """Load a row matching the data, or create one; optional _search_fields."""
-        # if restriction applies
-        if _search_fields is None:
-            searched_data = data
-        else:
-            searched_data = {key: data[key] for key in _search_fields if key in data}
-        # return corresponding row if already exists
-        loaded = cls.load(**searched_data)
-        if loaded:
-            logger.warning(data)
-            def _changed(key, value):
-                loaded_val = getattr(loaded, key)
-                if value is None or loaded_val is None:
-                    return value is not loaded_val
-                return loaded_val != value
-            changed_data = {key: value for key, value in data.items() if _changed(key, value)}
-            changed_data = {}
-            for name, value in data.items():
-                field = cls._get_field(name)
-                if field.is_reference:
-                    if name not in loaded._lazy_joins:
-                        if value is not None:
-                            changed_data[name] = value.id
-                            raise NotImplementedError(
-                                "Unexpected: reference not in _lazy_joins"
-                            )
-                    elif value is None:
-                        changed_data[name] = None
-                    else:
-                        foreign_key = loaded._lazy_joins[name]
-                        if isinstance(foreign_key, int):
-                            if foreign_key != value.id:
-                                changed_data[name] = value.id
-                        elif isinstance(foreign_key, tuple) and len(foreign_key) == 2:
-                            if foreign_key[0] != value.__class__ or foreign_key[1] != value.id:
-                                changed_data[name] = value
-                        else:
-                            raise ValueError("?!")
-
-                elif getattr(loaded, name) != value:
-                    if cls._get_field(name):
-                        changed_data[name] = value
-            logger.warning(changed_data)
-            loaded.update(**changed_data)
-            return loaded
-        # build new item if not found
-        return cls(**data)
+        keys = _search_fields if _search_fields is not None else list(data.keys())
+        on_conflict = [k for k in keys if k in data]
+        if not on_conflict:
+            return cls(**data)
+        return cls.q().upsert(on_conflict=on_conflict, **data)
 
     ##
 
@@ -250,7 +202,16 @@ class Table(metaclass=TableMeta):
     def q(cls) -> "Query":
         """Return a Query for this table. Use instead of load/load_all."""
         from .query import Query
-        return Query(table=cls)
+        q = Query(table=cls)
+        for c in cls.__mro__:
+            transform = getattr(c, "_transform_query", Table._transform_query)
+            q = transform.__func__(cls, q)
+        return q
+
+    @classmethod
+    def _transform_query(cls, q: "Query") -> "Query":
+        """Override in subclasses to customize the default Query. Identity by default."""
+        return q
 
     @classmethod
     def load(cls, reverse_order: bool = True, as_collection: bool = False,
@@ -263,10 +224,9 @@ class Table(metaclass=TableMeta):
             stacklevel=2,
         )
         from .expressions import ColumnExpression
-        from .query import Query
         preload_list = [preload] if isinstance(preload, str) else (preload or [])
         root = cls._root_expression()
-        q = Query(table=cls)
+        q = cls.q()
         if preload_list:
             select_exprs = [root.get_column_expression("id")]
             for p in preload_list:
@@ -292,6 +252,7 @@ class Table(metaclass=TableMeta):
                     stmts.append(getattr(root, k) == v)
             q = q.where(*stmts)
         if not reverse_order:
+            q = q.clone_query_with(order_by_expressions=[])
             if issubclass(cls, _WithTimestamps):
                 q = q.order_by(root.get_column_expression("created_at"))
             elif issubclass(cls, _WithVersion):

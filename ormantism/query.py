@@ -381,7 +381,7 @@ class Query(BaseModel):
         return self.clone_query_with(select_expressions=self.select_expressions + normalized)
 
     def where(self, *statements: Expression, **kwargs: Any) -> Query:
-        """Apply filters using expressions and/or Django-style kwargs.
+        """Apply filters using SQLAlchemy-like expressions and/or Django-style kwargs.
 
         Examples:
             where(User.id == 12)
@@ -453,14 +453,9 @@ class Query(BaseModel):
         return sql_select, from_join
 
     def sql_order(self) -> str:
-        """ORDER BY clause from order_by_expressions, or default for the table."""
+        """ORDER BY clause from order_by_expressions, or id DESC when empty."""
         if not self.order_by_expressions:
             tbl = self.table._get_table_name()
-            if issubclass(self.table, _WithTimestamps):
-                return f"{tbl}.created_at DESC"
-            if issubclass(self.table, _WithVersion):
-                along = getattr(self.table, "_VERSIONING_ALONG", ())
-                return ", ".join(f"{tbl}.{a}" for a in along) + f", {tbl}.version DESC"
             return f"{tbl}.id DESC"
         return ", ".join(o.sql for o in self.order_by_expressions)
 
@@ -739,7 +734,7 @@ class Query(BaseModel):
             sql = f"DELETE FROM {tbl}{self.sql_where}"
             self.execute(sql, self.values)
 
-    def get(self, ensure_one_result: bool = False) -> Optional[Table]:
+    def get_one(self, *statements: Expression, **kwargs: Any) -> Table:
         """Return a single Table instance (self.table) or None.
 
         Args:
@@ -752,14 +747,12 @@ class Query(BaseModel):
         Raises:
             ValueError: If ensure_one_result is True and there are zero or multiple results.
         """
-        if ensure_one_result:
-            rows = self.all(limit=2)
-            if len(rows) == 0:
-                raise ValueError("Query returned no results")
-            if len(rows) > 1:
-                raise ValueError("Query returned more than one result")
-            return rows[0]
-        return self.first()
+        rows = self.where(*statements, **kwargs).all(limit=2)
+        if len(rows) == 0:
+            raise ValueError("Query returned no results")
+        if len(rows) > 1:
+            raise ValueError("Query returned more than one result")
+        return rows[0]
 
     def first(self) -> Optional[Table]:
         """Return the first matching row as a Table instance (self.table), or None if no results."""
@@ -767,6 +760,43 @@ class Query(BaseModel):
         for row in q:
             return row
         return None
+
+    def upsert(
+        self,
+        on_conflict: list[str],
+        **data: Any,
+    ) -> Table:
+        """Insert a row, or update if a row matching on_conflict columns already exists.
+
+        Uses SELECT + UPDATE/INSERT (driver-agnostic, no UNIQUE constraint required).
+
+        Args:
+            on_conflict: Field names that form the match criteria (insert or update).
+            **data: Field values to insert or update.
+
+        Returns:
+            The upserted Table instance (inserted or updated row).
+        """
+        cls = self.table
+        read_only = set(data) & set(getattr(cls, "_READ_ONLY_FIELDS", ()))
+        if read_only:
+            raise AttributeError(
+                f"Cannot set read-only attribute(s) of {cls.__name__}: {', '.join(read_only)}"
+            )
+        for name in on_conflict:
+            if name not in data:
+                raise ValueError(
+                    f"on_conflict field {name!r} must be present in data"
+                )
+
+        search_kwargs = {name: data[name] for name in on_conflict}
+        existing = cls.q().where(**search_kwargs).first()
+        if existing:
+            update_data = {k: v for k, v in data.items() if k not in getattr(cls, "_READ_ONLY_FIELDS", ())}
+            if update_data:
+                cls.q().where(cls.get_column_expression("id") == existing.id).update(**update_data)
+            return cls.q().where(cls.get_column_expression("id") == existing.id).first()
+        return cls(**data)
 
     def insert(
         self,
