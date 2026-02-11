@@ -258,14 +258,14 @@ class Table(metaclass=TableMeta):
              **criteria) -> "Table":
         """Load by criteria; supports preload paths and optional soft-delete."""
         from .expressions import ColumnExpression
-        from .query import Query, _path_to_expression, _pk_name, _stored_pk
+        from .query import Query, _pk_name, _stored_pk
         preload_list = [preload] if isinstance(preload, str) else (preload or [])
         root = cls._root_expression()
         q = Query(cls)
         if preload_list:
             select_exprs = [root.get_column_expression(_pk_name(cls))]
             for p in preload_list:
-                e = _path_to_expression(root, p)
+                e = q._resolve_user_path(p)
                 if e is not None:
                     select_exprs.append(e)
             q = q.clone_query_with(select_expressions=select_exprs)
@@ -315,6 +315,11 @@ class Table(metaclass=TableMeta):
         """Return the root TableExpression for this table (for building query expressions)."""
         from .expressions import TableExpression
         return TableExpression(table=cls, parent=None, path=())
+
+    @classmethod
+    def get_column_expression(cls, name: str):
+        """Return the ColumnExpression or TableExpression for the given field/column name (e.g. for query building)."""
+        return cls._root_expression().get_column_expression(name)
 
     @classmethod
     def _suspend_validation(cls):

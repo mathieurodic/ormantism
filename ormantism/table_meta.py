@@ -74,4 +74,9 @@ class TableMeta(ModelMetaclass):
             if fname in result._READ_ONLY_FIELDS:
                 continue
             setattr(result, fname, root.get_column_expression(fname))
+        # Class-level pk expression for query building (e.g. A.pk == 1), without shadowing instance.id.
+        pk_name = result._READ_ONLY_FIELDS[0] if result._READ_ONLY_FIELDS else "id"
+        setattr(result, "pk", root.get_column_expression(pk_name))
+        # Root table expression for select(Model._expression) and helpers that take a TableExpression.
+        setattr(result, "_expression", root)
         return result

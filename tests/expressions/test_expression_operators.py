@@ -16,8 +16,7 @@ def test_expression_eq(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("id")
+    col = User.get_column_expression("id")
     expr = col == 42
     assert isinstance(expr, BinaryOperatorExpression)
     assert expr.symbol == "="
@@ -29,8 +28,7 @@ def test_expression_in(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("id")
+    col = User.get_column_expression("id")
     expr = col.in_([1, 2, 3])
     assert isinstance(expr, BinaryOperatorExpression)
     assert expr.symbol == "IN"
@@ -43,8 +41,7 @@ def test_expression_is_null(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("name")
+    col = User.get_column_expression("name")
     expr = col.is_null()
     assert isinstance(expr, UnaryOperatorExpression)
     assert expr.symbol == "IS NULL"
@@ -57,8 +54,7 @@ def test_expression_is_and_is_not(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("name")
+    col = User.get_column_expression("name")
     expr = col.is_(None)
     assert isinstance(expr, BinaryOperatorExpression)
     assert expr.symbol == "IS"
@@ -72,8 +68,7 @@ def test_expression_pos_and_pow(setup_db):
     class User(Table, with_timestamps=True):
         x: int = 0
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("x")
+    col = User.get_column_expression("x")
     pos_expr = +col
     assert isinstance(pos_expr, UnaryOperatorExpression)
     assert pos_expr.symbol == "+"
@@ -87,8 +82,7 @@ def test_expression_and_or(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("id")
+    col = User.get_column_expression("id")
     e1 = (col == 1) & (col == 2)
     assert isinstance(e1, BinaryOperatorExpression)
     assert e1.symbol == "AND"
@@ -104,9 +98,8 @@ def test_expression_arithmetic_and_comparison(setup_db):
         x: int = 0
         y: int = 0
 
-    root = TableExpression(table=User, parent=None, path=())
-    cx = root.get_column_expression("x")
-    cy = root.get_column_expression("y")
+    cx = User.get_column_expression("x")
+    cy = User.get_column_expression("y")
     assert (cx + cy).symbol == "+"
     assert (cx - cy).symbol == "-"
     assert (cx * cy).symbol == "*"
@@ -133,8 +126,7 @@ def test_collect_join_paths_from_expression(setup_db):
         title: str
         author: Author | None = None
 
-    root = TableExpression(table=Book, parent=None, path=())
-    author_expr = root.get_column_expression("author")
+    author_expr = Book.get_column_expression("author")
     name_col = author_expr.get_column_expression("name")
     expr = name_col == "x"
     paths = collect_join_paths_from_expression(expr)
@@ -150,8 +142,7 @@ def test_collect_join_paths_from_order_expression(setup_db):
         title: str
         author: Author | None = None
 
-    root = TableExpression(table=Book, parent=None, path=())
-    name_col = root.author.get_column_expression("name")
+    name_col = Book.author.get_column_expression("name")
     order_expr = OrderExpression(column_expression=name_col, desc=True)
     paths = collect_join_paths_from_expression(order_expr)
     assert "author" in paths
@@ -167,8 +158,7 @@ def test_expression_with_table_instance_binds_id(setup_db):
         author: User | None = None
 
     user = User(name="u")
-    root = TableExpression(table=Post, parent=None, path=())
-    col = root.get_column_expression("author_id")
+    col = Post.get_column_expression("author_id")
     expr = col == user
     assert expr.values == (user.id,)
 
@@ -177,8 +167,7 @@ def test_expression_not_method(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("name")
+    col = User.get_column_expression("name")
     not_expr = col.__not__()
     assert isinstance(not_expr, UnaryOperatorExpression)
     assert not_expr.symbol == "NOT"
@@ -189,8 +178,7 @@ def test_expression_is_not_and_is_not_null(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("name")
+    col = User.get_column_expression("name")
     not_expr = col.is_not(None)
     assert not_expr.symbol == "IS NOT"
     assert not_expr.sql == "(user.name IS NOT ?)"

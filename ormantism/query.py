@@ -333,15 +333,6 @@ def _column_name_for_path(model: type[Table], path: list[str]) -> str:
     return model._get_field(name).column_name
 
 
-def _path_to_expression(root: TableExpression, path_str: str) -> ColumnExpression | TableExpression:
-    """Resolve a dot-path string (e.g. 'author.company') to an expression from the root table."""
-    parts = path_str.split(".")
-    e: ColumnExpression | TableExpression = root
-    for p in parts:
-        e = getattr(e, p)
-    return e
-
-
 def _to_order_expression(table: type[Table], order: OrderExpression | ColumnExpression | TableExpression) -> OrderExpression:
     """Normalize an order spec to OrderExpression (for storage)."""
     if isinstance(order, OrderExpression):
@@ -365,11 +356,12 @@ def _select_paths_from_expressions(
     return paths
 
 
-def _collect_table_expressions(root: TableExpression, path_strings: Iterable[str]) -> list[TableExpression]:
+def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> list[TableExpression]:
     """Collect root and joined TableExpressions from path strings. Root first, then children in path_str order.
 
     Raises ValueError for generic Table reference (same as before).
     """
+    root = query.table._root_expression()
     seen_paths: set[str] = set()
     result: list[TableExpression] = [root]
 
@@ -381,7 +373,7 @@ def _collect_table_expressions(root: TableExpression, path_strings: Iterable[str
                 continue
             seen_paths.add(prefix)
             try:
-                e = _path_to_expression(root, prefix)
+                e = query._resolve_user_path(prefix)
             except (AttributeError, ValueError, KeyError):
                 continue
             if not isinstance(e, TableExpression):
@@ -543,12 +535,33 @@ class Query(BaseModel):
             return parent
         return parent + ALIAS_SEPARATOR + ALIAS_SEPARATOR.join(walk)
 
-    def select(self, *columns: ColumnExpression | TableExpression) -> Query:
-        """Set select/preload. Pass column/table expressions (e.g. User.id, User.books.title)."""
+    def _resolve_user_path(self, path_str: str) -> ColumnExpression | TableExpression:
+        """Resolve a user path string (e.g. 'name', 'book.title', 'book__title') to a ColumnExpression or TableExpression."""
+        path_str = path_str.replace("__", ".")
+        root = self.table._root_expression()
+        parts = path_str.split(".")
+        e: ColumnExpression | TableExpression = root
+        for p in parts:
+            e = getattr(e, p)
+        assert isinstance(e, (ColumnExpression, TableExpression))
+        return e
+
+    def select(self, *columns: type[Table] | str | ColumnExpression | TableExpression) -> Query:
+        """Set select/preload. Pass the table class for all fields (e.g. User), path strings (e.g. 'name', 'books.title'), or column/table expressions (e.g. User.id, User.books.title)."""
         if not columns:
             root = self.table._root_expression()
             columns = (root.get_column_expression(_pk_name(self.table)),)
-        return self.clone_query_with(select_expressions=self.select_expressions + list(columns))
+        normalized = []
+        for c in columns:
+            if isinstance(c, type) and issubclass(c, Table):
+                if c is not self.table:
+                    raise ValueError("Cannot select another table directly")
+                normalized.append(c._expression)
+            elif isinstance(c, str):
+                normalized.append(self._resolve_user_path(c))
+            else:
+                normalized.append(c)
+        return self.clone_query_with(select_expressions=self.select_expressions + normalized)
 
     def where(self, *statements: Expression) -> Query:
         """Apply filters using expressions (e.g. where(User.id == 12))."""
@@ -567,10 +580,14 @@ class Query(BaseModel):
             raise NotImplementedError("include_deleted only applies to tables with soft delete")
         return self.clone_query_with(with_deleted=True)
 
-    def order_by(self, *orders: OrderExpression | ColumnExpression | TableExpression) -> Query:
-        """Set ORDER BY. Pass expressions (e.g. User.name, User.name.desc)."""
+    def order_by(self, *orders: type[Table] | OrderExpression | ColumnExpression | TableExpression) -> Query:
+        """Set ORDER BY. Pass the table class (e.g. User) to order by pk, or expressions (e.g. User.name, User.name.desc)."""
         order_by_expressions = list(self.order_by_expressions)
         for order in orders:
+            if isinstance(order, type) and issubclass(order, Table):
+                if order is not self.table:
+                    raise ValueError("Cannot order by another table")
+                order = order._expression
             if isinstance(order, OrderExpression):
                 order_by_expressions.append(order)
             elif isinstance(order, ColumnExpression):
@@ -578,7 +595,7 @@ class Query(BaseModel):
             elif isinstance(order, TableExpression):
                 order_by_expressions.append(OrderExpression(column_expression=order.get_column_expression(_pk_name(self.table)), desc=False))
             else:
-                raise TypeError(f"order_by requires OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
+                raise TypeError(f"order_by requires table class, OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
         return self.clone_query_with(order_by_expressions=order_by_expressions)
 
     def limit(self, limit: int) -> Query:
@@ -596,8 +613,7 @@ class Query(BaseModel):
         all_paths = _select_paths_from_expressions(self.table, self.select_expressions)
         if extra_paths:
             all_paths = set(all_paths) | set(extra_paths)
-        root = self.table._root_expression()
-        table_expressions = _collect_table_expressions(root, all_paths)
+        table_expressions = _collect_table_expressions(self, all_paths)
         columns = []
         for te in table_expressions:
             columns.extend(_yield_columns_for_table_expression(te))
@@ -649,8 +665,7 @@ class Query(BaseModel):
 
         use_subquery = self.limit_value is not None or self.offset_value is not None
         if use_subquery:
-            subquery_root = self.table._root_expression()
-            subquery_tables = _collect_table_expressions(subquery_root, extra_paths)
+            subquery_tables = _collect_table_expressions(self, extra_paths)
             subquery_from = _sql_from_join(subquery_tables)
             subquery = f"SELECT {tbl}.id\n{subquery_from}{where_clause}"
             subquery += "\nORDER BY " + order_clause

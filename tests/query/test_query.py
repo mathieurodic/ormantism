@@ -87,8 +87,7 @@ class TestQuerySelect:
             value: int = 0
 
         A(name="x", value=1)
-        root = A._root_expression()
-        q = Query(table=A).select(root.id, root.name, root.value)
+        q = Query(table=A).select(A.pk, A.name, A.value)
         rows = list(q)
         assert len(rows) == 1
         assert rows[0].id == 1
@@ -104,8 +103,7 @@ class TestQuerySelect:
 
         b = B()
         C(links_to=b)
-        root = C._root_expression()
-        q = Query(table=C).select(root.id, root.links_to).where(root.links_to_id == _pk(b))
+        q = Query(table=C).select(C.pk, C.links_to).where(C.get_column_expression("links_to_id") == _pk(b))
         rows = list(q)
         assert len(rows) >= 1
         assert rows[0].links_to is not None
@@ -120,8 +118,7 @@ class TestQueryWhere:
             name: str = ""
 
         a = A(name="unique")
-        root = A._root_expression()
-        q = Query(table=A).where(root.id == _pk(a))
+        q = Query(table=A).where(A.pk == _pk(a))
         row = q.first()
         assert row is not None
         assert row.id == a.id
@@ -133,8 +130,7 @@ class TestQueryWhere:
 
         A(name="x")
         A(name="y")
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "y")
+        q = Query(table=A).where(A.name == "y")
         row = q.first()
         assert row is not None
         assert row.name == "y"
@@ -146,8 +142,7 @@ class TestQueryWhere:
 
         A(name="a", value=1)
         A(name="a", value=2)
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "a", root.value == 1)
+        q = Query(table=A).where(A.name == "a", A.value == 1)
         row = q.first()
         assert row is not None
         assert row.name == "a"
@@ -164,8 +159,7 @@ class TestQueryOrderAndLimit:
         A(name="c")
         A(name="a")
         A(name="b")
-        root = A._root_expression()
-        q = Query(table=A).order_by(root.name).limit(3)
+        q = Query(table=A).order_by(A.name).limit(3)
         rows = list(q)
         names = [r.name for r in rows]
         assert names == sorted(names)
@@ -176,8 +170,7 @@ class TestQueryOrderAndLimit:
 
         A(name="first")
         A(name="second")
-        root = A._root_expression()
-        q = Query(table=A).order_by(root.id.desc).limit(2)
+        q = Query(table=A).order_by(A.pk.desc).limit(2)
         rows = list(q)
         ids = [r.id for r in rows]
         assert ids == sorted(ids, reverse=True)
@@ -193,9 +186,8 @@ class TestQueryOrderAndLimit:
         b2 = B(title="second")
         A(book=b1)
         A(book=b2)
-        root = A._root_expression()
         # Order by the related table expression (resolves to book.id)
-        q = Query(table=A).select(root.id, root.book).order_by(root.book).limit(5)
+        q = Query(table=A).select(A.pk, A.book).order_by(A.book).limit(5)
         rows = list(q)
         assert len(rows) == 2
         assert [r.id for r in rows] == [1, 2]
@@ -255,12 +247,11 @@ class TestQueryIncludeDeleted:
 
         a = A(name="x")
         a.delete()
-        root = A._root_expression()
         # Default: not found
-        q_default = Query(table=A).where(root.id == _pk(a))
+        q_default = Query(table=A).where(A.pk == _pk(a))
         assert q_default.first() is None
         # With include_deleted: found
-        q_with = Query(table=A).include_deleted().where(root.id == _pk(a))
+        q_with = Query(table=A).include_deleted().where(A.pk == _pk(a))
         found = q_with.first()
         assert found is not None
         assert found.id == a.id
@@ -305,20 +296,18 @@ class TestQueryAllGetFirst:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
         a = A(name="only")
-        q = Query(table=A).where(root.id == _pk(a))
+        q = Query(table=A).where(A.pk == _pk(a))
         assert q.first() is not None
-        q_none = Query(table=A).where(root.id == 999999)
+        q_none = Query(table=A).where(A.pk == 999999)
         assert q_none.first() is None
 
     def test_get_returns_first(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
         a = A(name="g")
-        q = Query(table=A).where(root.id == _pk(a))
+        q = Query(table=A).where(A.pk == _pk(a))
         assert q.get() is not None
         assert q.get().id == a.id
 
@@ -326,8 +315,7 @@ class TestQueryAllGetFirst:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).where(root.id == 999999)
+        q = Query(table=A).where(A.pk == 999999)
         with pytest.raises(ValueError, match="no results"):
             q.get(ensure_one_result=True)
 
@@ -345,9 +333,8 @@ class TestQueryAllGetFirst:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
         a = A(name="single")
-        q = Query(table=A).where(root.id == _pk(a))
+        q = Query(table=A).where(A.pk == _pk(a))
         row = q.get(ensure_one_result=True)
         assert row is not None
         assert row.id == a.id
@@ -363,10 +350,9 @@ class TestQueryUpdate:
 
         A(name="x", value=1)
         A(name="x", value=2)
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "x")
+        q = Query(table=A).where(A.name == "x")
         q.update(value=10)
-        rows = list(Query(table=A).where(root.name == "x"))
+        rows = list(Query(table=A).where(A.name == "x"))
         assert len(rows) == 2
         assert sorted(r.id for r in rows) == [1, 2]
         assert all(r.value == 10 for r in rows)
@@ -424,16 +410,14 @@ class TestQueryJoin:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).select(root.name)
+        q = Query(table=A).select(A.name)
         assert "name" in q.sql
 
     def test_add_children_generic_table_reference_raises(self, setup_db):
         class A(Table, with_timestamps=True):
             ref: Table | None = None
 
-        root = A._root_expression()
-        q = Query(table=A).select(root.ref)  # generic reference
+        q = Query(table=A).select(A.ref)  # generic reference
         with pytest.raises(ValueError, match="Generic reference cannot be preloaded"):
             _ = q.sql
 
@@ -451,10 +435,72 @@ class TestQueryJoin:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        q = Query(table=A).select(A._root_expression().book)
+        q = Query(table=A).select(A.book)
         alias = q.get_alias_for_path(["book", "title"])
         assert "book" in alias
         assert alias == f"{A._get_table_name()}{ALIAS_SEPARATOR}book"
+
+
+class TestResolveUserPathAndSelectString:
+    """Query._resolve_user_path and Query.select with path strings."""
+
+    def test_resolve_user_path_root_column(self, setup_db):
+        """Query._resolve_user_path('name') returns the root column expression."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        expr = Query(table=A)._resolve_user_path("name")
+        assert expr.path_str == "name"
+        assert "name" in Query(table=A).select(expr).sql
+
+    def test_resolve_user_path_nested_dot(self, setup_db):
+        """Query._resolve_user_path('book.title') returns the nested column expression."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        expr = Query(table=A)._resolve_user_path("book.title")
+        assert expr.path_str == "book.title"
+        assert "title" in Query(table=A).select(expr).sql and "JOIN" in Query(table=A).select(expr).sql
+
+    def test_resolve_user_path_nested_double_underscore(self, setup_db):
+        """Query._resolve_user_path('book__title') is treated as 'book.title'."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        expr = Query(table=A)._resolve_user_path("book__title")
+        assert expr.path_str == "book.title"
+
+    def test_select_string_root_column(self, setup_db):
+        """select('name') builds the same as select(A.name)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        q = Query(table=A).select("name")
+        assert "name" in q.sql
+        rows = list(q)
+        assert all(hasattr(r, "name") for r in rows)
+
+    def test_select_string_nested_column(self, setup_db):
+        """select('book.title') builds JOIN and returns rows."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        b = B(title="t1")
+        A(book=b)
+        q = Query(table=A).select("book.title")
+        assert "JOIN" in q.sql
+        rows = list(q)
+        assert len(rows) >= 1
+        assert rows[0].book is not None and rows[0].book.title == "t1"
 
 
 class TestCompiledSqlAndValues:
@@ -481,8 +527,7 @@ class TestCompiledSqlAndValues:
         class A(Table, with_timestamps=False):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "x")
+        q = Query(table=A).where(A.name == "x")
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         expected_sql = (
@@ -500,8 +545,7 @@ class TestCompiledSqlAndValues:
             name: str = ""
             value: int = 0
 
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "a", root.value == 42)
+        q = Query(table=A).where(A.name == "a", A.value == 42)
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         expected_sql = (
@@ -566,8 +610,7 @@ class TestCompiledSqlAndValues:
         class A(Table, with_timestamps=False):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "x").limit(1)
+        q = Query(table=A).where(A.name == "x").limit(1)
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         subquery = (
@@ -592,8 +635,7 @@ class TestCompiledSqlAndValues:
 
         A(name="c1")
         A(name="c2")
-        root = A._root_expression()
-        q = Query(table=A).where(root.name == "c1").limit(1)
+        q = Query(table=A).where(A.name == "c1").limit(1)
         sql, values = q.sql, q.values
         rows = q.execute(sql, values)
         assert len(rows) == 1
@@ -612,8 +654,7 @@ class TestQueryOffset:
 
         for i in range(5):
             A(name=f"n{i}")
-        root = A._root_expression()
-        q = Query(table=A).order_by(root.id).limit(2).offset(1)
+        q = Query(table=A).order_by(A.pk).limit(2).offset(1)
         rows = list(q)
         assert len(rows) == 2
         # ORDER BY id ASC, OFFSET 1 LIMIT 2 -> ids 2 and 3
@@ -759,8 +800,7 @@ class TestInstanceFromRowAndHydrationCoverage:
             name: str = ""
 
         A(name="x")
-        root = A._root_expression()
-        q = Query(table=A).select(root.id, root.name)
+        q = Query(table=A).select(A.pk, A.name)
         rows = list(q)
         assert len(rows) == 1
         assert rows[0].id == 1
@@ -824,8 +864,7 @@ class TestInstanceFromRowAndHydrationCoverage:
 
         a = A(book=None)
         assert a.id == 1
-        root = A._root_expression()
-        q = Query(table=A).select(root.id, root.book).where(root.id == 1)
+        q = Query(table=A).select(A.pk, A.book).where(A.pk == 1)
         row = q.first()
         assert row is not None
         assert row.id == 1
@@ -866,8 +905,7 @@ class TestOrderByTypeError:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).order_by(root)
+        q = Query(table=A).order_by(A)
         sql = q.sql
         assert "ORDER BY" in sql
         assert "id" in sql
@@ -880,15 +918,14 @@ class TestOrderByTypeError:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        o = _to_order_expression(A, root)
+        o = _to_order_expression(A, A._expression)
         assert o.column_expression is not None
         assert o.column_expression.path_str == "id"
 
         o2 = _to_order_expression(A, o)
         assert o2 is o
 
-        col = root.get_column_expression("name")
+        col = A.get_column_expression("name")
         o3 = _to_order_expression(A, col)
         assert o3.column_expression is col
 
@@ -934,7 +971,7 @@ class TestUpdateAndDeleteInstanceCoverage:
         assert a.id == 1
         a.delete()
         assert Query(table=A).first() is None
-        found = Query(table=A).include_deleted().where(A._root_expression().id == 1).first()
+        found = Query(table=A).include_deleted().where(A.pk == 1).first()
         assert found is not None
         assert found.id == 1
 
@@ -1118,7 +1155,7 @@ class TestUpdateAndDeleteInstanceDirect:
         assert s.id == 1
         delete_instance(s)
         assert Query(table=Soft).first() is None
-        assert Query(table=Soft).include_deleted().where(Soft._root_expression().id == 1).first().id == 1
+        assert Query(table=Soft).include_deleted().where(Soft.pk == 1).first().id == 1
 
         h = Hard(name="h")
         assert h.id == 1
@@ -1138,8 +1175,7 @@ class TestCollectTableExpressionsExcept:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        root = A._root_expression()
-        result = _collect_table_expressions(root, ["id", "nosuch.nothing"])
+        result = _collect_table_expressions(Query(table=A), ["id", "nosuch.nothing"])
         assert len(result) == 1
         assert result[0].table is A
 
@@ -1155,8 +1191,7 @@ class TestPolymorphicRefAndJoinCoverage:
             ref: Table | None = None
 
         ensure_table_structure(A)
-        root = A._root_expression()
-        q = Query(table=A).select(root)
+        q = Query(table=A).select(A)
         sql = q.sql
         assert "ref_table" in sql
         assert "ref_id" in sql
@@ -1168,8 +1203,7 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        root = A._root_expression()
-        q = Query(table=A).select(root.id, root.book.title)
+        q = Query(table=A).select(A.pk, A.book.title)
         sql = q.sql
         assert "LEFT JOIN" in sql
         assert "book" in sql.lower()
@@ -1182,8 +1216,7 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        root = A._root_expression()
-        q = Query(table=A).select(root.book.title, root.book.id)
+        q = Query(table=A).select(A.book.title, A.book.id)
         sql = q.sql
         assert "book" in sql
 
@@ -1192,8 +1225,7 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        q = Query(table=A).select(root.name)
+        q = Query(table=A).select(A.name)
         sql = q.sql
         assert "id" in sql
         assert "name" in sql
@@ -1208,8 +1240,7 @@ class TestPolymorphicRefAndJoinCoverage:
 
         ensure_table_structure(A)
         ensure_table_structure(B)
-        root = A._root_expression()
-        q = Query(table=A).select(root.id)
+        q = Query(table=A).select(A.pk)
         sql = q.sql
         assert "items_ids" in sql
         assert "items_tables" in sql
@@ -1237,8 +1268,7 @@ class TestPolymorphicListRefHydration:
             f"{tbl}{ALIAS_SEPARATOR}items_ids": "[1, 2]",
             f"{tbl}{ALIAS_SEPARATOR}items_tables": '["b", "b"]',
         }
-        root = A._root_expression()
-        q = Query(table=A).select(root.id, root.items)
+        q = Query(table=A).select(A.pk, A.items)
         inst = q.instance_from_row(row_dict)
         assert inst.id == 1
         assert len(inst.items) == 2
@@ -1317,8 +1347,7 @@ class TestQueryCoverageHelpers:
         assert p.id == 1
         tbl = Parent._get_table_name()
         row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1}
-        root = Parent._root_expression()
-        q = Query(table=Parent).select(root.id)
+        q = Query(table=Parent).select(Parent.pk)
         inst = q.instance_from_row(row_dict)
         assert inst.id == 1
         assert inst.kids == []
@@ -1330,8 +1359,7 @@ class TestQueryCoverageHelpers:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        root = A._root_expression()
-        paths = _select_paths_from_expressions(A, [root.name])
+        paths = _select_paths_from_expressions(A, [A.name])
         assert "id" in paths
         assert "name" in paths
 
@@ -1345,8 +1373,7 @@ class TestQueryCoverageHelpers:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        root = A._root_expression()
-        result = _collect_table_expressions(root, ["book.title"])
+        result = _collect_table_expressions(Query(table=A), ["book.title"])
         assert len(result) == 2
         assert result[0].table is A
         assert result[1].table is B

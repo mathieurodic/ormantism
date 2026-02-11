@@ -17,8 +17,7 @@ def test_join_tree_non_reference_path_builds_without_join(setup_db):
         label: str = ""
         parent: A | None = None
 
-    root = B._root_expression()
-    q = Query(table=B).select(root.label)
+    q = Query(table=B).select(B.label)
     rows, column_names = q._execute_with_column_names(q.sql, q.values)
     assert "label" in q.sql or any("label" in a for a in column_names)
 
@@ -28,8 +27,7 @@ def test_join_tree_generic_table_path_raises(setup_db):
     class B(Table, with_timestamps=True):
         ref: Table | None = None
 
-    root = B._root_expression()
-    q = Query(table=B).select(root.ref)
+    q = Query(table=B).select(B.ref)
     with pytest.raises(ValueError, match="Generic reference cannot be preloaded"):
         _ = q.sql
 

@@ -5,14 +5,14 @@ from ormantism.expressions import TableExpression, ColumnExpression
 
 
 def test_table_class_has_column_attributes(setup_db):
-    """Table subclasses get class-level .name as ColumnExpression; id via root.get_column_expression."""
+    """Table subclasses get class-level .name and .pk (ColumnExpression) for query building."""
     class User(Table, with_timestamps=True):
         name: str
 
-    root = User._root_expression()
-    id_expr = root.get_column_expression("id")
+    id_expr = User.get_column_expression("id")
     assert isinstance(id_expr, ColumnExpression)
     assert id_expr.name == "id"
+    assert User.pk.name == "id"
     assert isinstance(User.name, ColumnExpression)
     assert User.name.name == "name"
 

@@ -10,8 +10,7 @@ def test_table_expression_root_alias(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    assert root.sql_alias == "user"
+    assert User._expression.sql_alias == "user"
 
 
 def test_table_expression_joined_alias(setup_db):
@@ -22,8 +21,7 @@ def test_table_expression_joined_alias(setup_db):
         title: str
         author: Author | None = None
 
-    root = TableExpression(table=Book, parent=None, path=())
-    author_table = TableExpression(table=Author, parent=root, path=("author",))
+    author_table = TableExpression(table=Author, parent=Book._expression, path=("author",))
     assert author_table.sql_alias == "book____author"
 
 
@@ -31,11 +29,10 @@ def test_table_expression_get_column_expression_scalar(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    col = root.get_column_expression("name")
+    col = User.get_column_expression("name")
     assert isinstance(col, ColumnExpression)
     assert col.name == "name"
-    assert col.table_expression is root
+    assert col.table_expression.table is User and col.table_expression.path == ()
 
 
 def test_table_expression_get_column_expression_reference(setup_db):
@@ -46,20 +43,18 @@ def test_table_expression_get_column_expression_reference(setup_db):
         title: str
         author: Author | None = None
 
-    root = TableExpression(table=Book, parent=None, path=())
-    author_expr = root.get_column_expression("author")
+    author_expr = Book.get_column_expression("author")
     assert isinstance(author_expr, TableExpression)
     assert author_expr.table is Author
     assert author_expr.path == ("author",)
-    assert author_expr.parent is root
+    assert author_expr.parent.table is Book and author_expr.parent.path == ()
 
 
 def test_table_expression_sql_declarations_root(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    decls = list(root.sql_declarations)
+    decls = list(User._expression.sql_declarations)
     assert decls == ["FROM user"]
 
 
@@ -71,8 +66,7 @@ def test_table_expression_sql_declarations_with_join(setup_db):
         title: str
         author: Author | None = None
 
-    root = TableExpression(table=Book, parent=None, path=())
-    author_expr = TableExpression(table=Author, parent=root, path=("author",))
+    author_expr = TableExpression(table=Author, parent=Book._expression, path=("author",))
     decls = list(author_expr.sql_declarations)
     assert decls[0] == "FROM book"
     assert "JOIN author AS book____author" in decls[1]
@@ -83,8 +77,7 @@ def test_table_expression_sql_declarations_empty_path_asserts(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
-    bad = TableExpression(table=User, parent=root, path=())
+    bad = TableExpression(table=User, parent=User._expression, path=())
     with pytest.raises(AssertionError, match="Path must not be empty"):
         list(bad.sql_declarations)
 
@@ -94,9 +87,8 @@ def test_table_expression_getattr_underscore_raises(setup_db):
     class User(Table, with_timestamps=True):
         name: str
 
-    root = TableExpression(table=User, parent=None, path=())
     with pytest.raises(AttributeError, match="_private"):
-        _ = root._private
+        _ = User._expression._private
 
 
 def test_table_expression_sql_alias_base_table_raises(setup_db):
