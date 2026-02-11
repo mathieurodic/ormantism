@@ -331,7 +331,7 @@ class Ptr(Table):
 
 ## Code reference
 
-For a full **code reference** of the library (all classes and methods with definition and usage locations), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**. It lists every public class (e.g. `Table`, `Field`, `JoinInfo`, `Transaction`, `SuperModel`) and method with their source file and line numbers and where they are used—useful when navigating the codebase or contributing.
+For a full **code reference** of the library (all classes and methods with definition and usage locations), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**. It lists every public class (e.g. `Table`, `Field`, `QueryJoin`, `Transaction`, `SuperModel`) and method with their source file and line numbers and where they are used—useful when navigating the codebase or contributing.
 
 ## Limitations
 

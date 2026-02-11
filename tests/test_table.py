@@ -469,8 +469,8 @@ class TestOnBeforeUpdatePaths:
             name: str = ""
 
         a = A(name="x")
-        # Table always has _WithPrimaryKey in MRO; patch so isinstance(self, _WithPrimaryKey) is False
-        with patch("ormantism.table._WithPrimaryKey", type("_FakePK", (), {})):
+        # Check is in query.update_instance; patch so isinstance(instance, _WithPrimaryKey) is False
+        with patch("ormantism.query._WithPrimaryKey", type("_FakePK", (), {})):
             with pytest.raises(NotImplementedError):
                 a.on_before_update({"name": "z"})
 

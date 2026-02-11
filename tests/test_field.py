@@ -5,7 +5,8 @@ from typing import Optional
 import pytest
 from pydantic import BaseModel, Field as PydanticField
 
-from ormantism.table import Table, Field
+from ormantism.table import Table
+from ormantism.column import Column
 from ormantism import JSON
 
 
@@ -15,7 +16,7 @@ def test_reference_type_non_reference():
         name: str
 
     info = T.model_fields["name"]
-    f = Field.from_pydantic_info(T, "name", info)
+    f = Column.from_pydantic_info(T, "name", info)
     assert f.reference_type is None
 
 
@@ -28,7 +29,7 @@ def test_reference_type_reference():
         ref: B | None = None
 
     info = C.model_fields["ref"]
-    f = Field.from_pydantic_info(C, "ref", info)
+    f = Column.from_pydantic_info(C, "ref", info)
     assert f.reference_type is B
 
 
@@ -41,7 +42,7 @@ def test_column_base_type_reference():
         ref: B = None
 
     info = C.model_fields["ref"]
-    f = Field.from_pydantic_info(C, "ref", info)
+    f = Column.from_pydantic_info(C, "ref", info)
     assert f.column_base_type is int
 
 
@@ -51,7 +52,7 @@ def test_column_base_type_non_reference():
         name: str
 
     info = T.model_fields["name"]
-    f = Field.from_pydantic_info(T, "name", info)
+    f = Column.from_pydantic_info(T, "name", info)
     assert f.column_base_type is str
 
 
@@ -61,19 +62,16 @@ def test_from_pydantic_info_dict_two_secondary_types():
         data: dict[str, int] | None = None
 
     info = T.model_fields["data"]
-    f = Field.from_pydantic_info(T, "data", info)
+    f = Column.from_pydantic_info(T, "data", info)
     assert f.base_type is dict
     assert f.secondary_type is str  # line 94 overwrites to secondary_types[0]
 
 
 def test_from_pydantic_info_unsupported_union_raises():
     """from_pydantic_info raises ValueError for unsupported secondary_types_count."""
-    class T(Table):
-        x: tuple[str, int, float] | None = None
-
-    info = T.model_fields["x"]
-    with pytest.raises(ValueError, match="secondary_types"):
-        Field.from_pydantic_info(T, "x", info)
+    with pytest.raises(ValueError, match="secondary_types|base_type"):
+        class T(Table):
+            x: tuple[str, int, float] | None = None
 
 
 def test_from_pydantic_info():
@@ -95,11 +93,11 @@ def test_from_pydantic_info():
         conversation: list[str] = PydanticField(default_factory=list)
 
     fields = {
-        name: Field.from_pydantic_info(Agent, name, info)
+        name: Column.from_pydantic_info(Agent, name, info)
         for name, info in Agent.model_fields.items()
     }
 
-    assert fields["birthed_by"] == Field(table=Agent,
+    assert fields["birthed_by"] == Column(table=Agent,
                                          name="birthed_by",
                                          base_type=Agent,
                                          secondary_type=None,
@@ -108,7 +106,7 @@ def test_from_pydantic_info():
                                          is_required=False,
                                          column_is_required=False,
                                          is_reference=True)
-    assert fields["name"] == Field(table=Agent,
+    assert fields["name"] == Column(table=Agent,
                                    name="name",
                                    base_type=str,
                                    secondary_type=None,
@@ -117,7 +115,7 @@ def test_from_pydantic_info():
                                    is_required=True,
                                    column_is_required=True,
                                    is_reference=False)
-    assert fields["description"] == Field(table=Agent,
+    assert fields["description"] == Column(table=Agent,
                                           name="description",
                                           base_type=str,
                                           secondary_type=None,
@@ -126,7 +124,7 @@ def test_from_pydantic_info():
                                           is_required=False,
                                           column_is_required=False,
                                           is_reference=False)
-    assert fields["thing"] == Field(table=Agent,
+    assert fields["thing"] == Column(table=Agent,
                                     name="thing",
                                     base_type=Thing,
                                     secondary_type=None,
@@ -135,7 +133,7 @@ def test_from_pydantic_info():
                                     is_required=True,
                                     column_is_required=True,
                                     is_reference=True)
-    assert fields["with_input_improvement"] == Field(table=Agent,
+    assert fields["with_input_improvement"] == Column(table=Agent,
                                                      name="with_input_improvement",
                                                      base_type=bool,
                                                      secondary_type=None,
@@ -155,7 +153,7 @@ def test_sql_creations_scalar_reference_to_table():
         target: Table | None = None
 
     info = Poly.model_fields["target"]
-    f = Field.from_pydantic_info(Poly, "target", info)
+    f = Column.from_pydantic_info(Poly, "target", info)
     sqls = list(f.sql_creations)
     assert any("target_table" in s for s in sqls)
     assert any("target_id" in s for s in sqls)
@@ -167,7 +165,7 @@ def test_sql_creations_list_of_table_references():
         items: list[Table] = []
 
     info = Poly.model_fields["items"]
-    f = Field.from_pydantic_info(Poly, "items", info)
+    f = Column.from_pydantic_info(Poly, "items", info)
     assert f.base_type is list
     assert f.secondary_type is Table
     sqls = list(f.sql_creations)
@@ -176,11 +174,11 @@ def test_sql_creations_list_of_table_references():
 
 
 def test_sql_creations_list_of_table_references_explicit_field():
-    """Cover branch secondary_type == Table by building Field with list and Table."""
+    """Cover branch secondary_type == Table by building Column with list and Table."""
     class Poly(Table):
         name: str = ""
 
-    f = Field(
+    f = Column(
         table=Poly,
         name="items",
         base_type=list,
@@ -206,7 +204,7 @@ def test_sql_creations_enum_column():
         e: E
 
     info = T.model_fields["e"]
-    f = Field.from_pydantic_info(T, "e", info)
+    f = Column.from_pydantic_info(T, "e", info)
     sqls = list(f.sql_creations)
     assert len(sqls) == 1
     assert "e TEXT" in sqls[0]
@@ -223,7 +221,7 @@ def test_sql_creations_base_model_column():
         n: Nested
 
     info = T.model_fields["n"]
-    f = Field.from_pydantic_info(T, "n", info)
+    f = Column.from_pydantic_info(T, "n", info)
     sqls = list(f.sql_creations)
     assert len(sqls) == 1
     assert "n JSON" in sqls[0]
@@ -235,7 +233,7 @@ def test_sql_creations_json_column():
         j: JSON
 
     info = T.model_fields["j"]
-    f = Field.from_pydantic_info(T, "j", info)
+    f = Column.from_pydantic_info(T, "j", info)
     sqls = list(f.sql_creations)
     assert len(sqls) == 1
     assert "j JSON" in sqls[0]
@@ -243,12 +241,12 @@ def test_sql_creations_json_column():
 
 
 def test_field_hash():
-    """Field is hashable (e.g. usable in set or as dict key)."""
+    """Column is hashable (e.g. usable in set or as dict key)."""
     class T(Table):
         name: str
 
     info = T.model_fields["name"]
-    f = Field.from_pydantic_info(T, "name", info)
+    f = Column.from_pydantic_info(T, "name", info)
     s = {f}
     assert f in s
     d = {f: 1}
@@ -264,7 +262,7 @@ def test_serialize_list_of_references(setup_db):
         items: list[B] = []
 
     info = C.model_fields["items"]
-    f = Field.from_pydantic_info(C, "items", info)
+    f = Column.from_pydantic_info(C, "items", info)
     b1 = B()
     b2 = B()
     result = f.serialize([b1, b2])
@@ -277,7 +275,7 @@ def test_serialize_type():
         kind: type
 
     info = T.model_fields["kind"]
-    f = Field.from_pydantic_info(T, "kind", info)
+    f = Column.from_pydantic_info(T, "kind", info)
     result = f.serialize(int)
     assert isinstance(result, dict)
     assert result.get("type") == "integer"
@@ -292,7 +290,7 @@ def test_serialize_exception_propagates():
         ref: B | None = None
 
     info = C.model_fields["ref"]
-    f = Field.from_pydantic_info(C, "ref", info)
+    f = Column.from_pydantic_info(C, "ref", info)
     with pytest.raises(AttributeError):
         f.serialize("not a B")  # has no .id
 
@@ -303,7 +301,7 @@ def test_parse_json_non_string_returns_value():
         j: JSON
 
     info = T.model_fields["j"]
-    f = Field.from_pydantic_info(T, "j", info)
+    f = Column.from_pydantic_info(T, "j", info)
     value = [1, 2, 3]
     assert f.parse(value) == value
 
@@ -314,7 +312,7 @@ def test_parse_json_decode_error_returns_value():
         j: JSON
 
     info = T.model_fields["j"]
-    f = Field.from_pydantic_info(T, "j", info)
+    f = Column.from_pydantic_info(T, "j", info)
     assert f.parse("not valid json {{{") == "not valid json {{{"
 
 
@@ -324,7 +322,7 @@ def test_parse_set():
         tags: set[str]
 
     info = T.model_fields["tags"]
-    f = Field.from_pydantic_info(T, "tags", info)
+    f = Column.from_pydantic_info(T, "tags", info)
     result = f.parse('["a", "b"]')
     assert result == {"a", "b"}
 
@@ -335,7 +333,7 @@ def test_parse_tuple():
         pair: tuple[int, int]
 
     info = T.model_fields["pair"]
-    f = Field.from_pydantic_info(T, "pair", info)
+    f = Column.from_pydantic_info(T, "pair", info)
     result = f.parse("[1, 2]")
     assert result == (1, 2)
 
@@ -350,7 +348,7 @@ def test_parse_base_model():
         n: Nested
 
     info = T.model_fields["n"]
-    f = Field.from_pydantic_info(T, "n", info)
+    f = Column.from_pydantic_info(T, "n", info)
     result = f.parse('{"x": 1, "y": "two"}')
     assert isinstance(result, Nested)
     assert result.x == 1
@@ -372,7 +370,7 @@ def test_parse_scalars():
         ("flag", "1", True),
     ]:
         info = T.model_fields[name]
-        f = Field.from_pydantic_info(T, name, info)
+        f = Column.from_pydantic_info(T, name, info)
         assert f.parse(raw) == expected
 
 
@@ -382,7 +380,7 @@ def test_parse_type_from_json_schema():
         kind: type
 
     info = T.model_fields["kind"]
-    f = Field.from_pydantic_info(T, "kind", info)
+    f = Column.from_pydantic_info(T, "kind", info)
     schema = {"type": "integer"}
     result = f.parse(schema)
     assert result is int
@@ -394,7 +392,7 @@ def test_parse_type_from_json_string():
         kind: type
 
     info = T.model_fields["kind"]
-    f = Field.from_pydantic_info(T, "kind", info)
+    f = Column.from_pydantic_info(T, "kind", info)
     result = f.parse('{"type": "string"}')
     assert result is str
 
@@ -405,7 +403,7 @@ def test_parse_type_rebuild_pydantic_model():
         model_cls: type[BaseModel] | None = None
 
     info = T.model_fields["model_cls"]
-    f = Field.from_pydantic_info(T, "model_cls", info)
+    f = Column.from_pydantic_info(T, "model_cls", info)
     schema = {
         "type": "object",
         "title": "AdHoc",
@@ -426,7 +424,7 @@ def test_parse_type_raises_when_not_dict():
         kind: type
 
     info = T.model_fields["kind"]
-    f = Field.from_pydantic_info(T, "kind", info)
+    f = Column.from_pydantic_info(T, "kind", info)
     with pytest.raises(ValueError, match="Type representation should be stored"):
         f.parse(123)
 
@@ -439,8 +437,8 @@ def test_parse_unknown_type_raises():
     class T(Table):
         name: str
 
-    # Build a Field that looks like an unsupported type for parse
-    f = Field(
+    # Build a Column that looks like an unsupported type for parse
+    f = Column(
         table=T,
         name="x",
         base_type=Unknown,
@@ -463,7 +461,7 @@ def test_sql_creations_unsupported_type_raises():
     class T(Table):
         name: str
 
-    f = Field(
+    f = Column(
         table=T,
         name="x",
         base_type=Unknown,

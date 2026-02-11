@@ -1,16 +1,15 @@
 """Table model base for ORM CRUD and schema creation."""
 
-from typing import ClassVar
 import inspect
 import logging
-import sqlite3
+import warnings
+from typing import ClassVar
 from functools import cache
 
 from pydantic import BaseModel
 
 from .utils.make_hashable import make_hashable
-from .transaction import transaction
-from .field import Field
+from .column import Column
 from .table_meta import TableMeta
 from .table_mixins import (
     _WithPrimaryKey,
@@ -20,7 +19,6 @@ from .table_mixins import (
     _WithTimestamps,
     _WithVersion,
 )
-
 
 logger = logging.getLogger("ormantism")
 
@@ -51,111 +49,14 @@ class Table(metaclass=TableMeta):
     # INSERT
     def on_after_create(self, init_data: dict):
         """Persist the instance to the database (INSERT) and set generated columns."""
-        # if primary key already set: skip entirely
-        if self.id is not None and self.id >= 0:
-            return
-        self.check_read_only(init_data)
-        # special column for versioning
-        if isinstance(self, _WithVersion):
-            tbl = self._get_table_name()
-            sql = f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
-            values = []
-            for name, value in init_data.items():
-                if name not in self._VERSIONING_ALONG:
-                    continue
-                if value is None:
-                    sql += f" AND {name} IS NULL"
-                else:
-                    sql += f" AND {name} = ?"
-                    values.append(value)
-            sql += " RETURNING version"
-            rows = self._execute(sql, values)
-            init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
-        # format data
-        exclude = set(self.__class__.model_fields)
-        include = set()
-        processed_data = self.process_data(init_data)
-        formatted_data = {}
-        # Include fields with defaults so they are inserted (and RETURNING matches instance)
-        for name, field in self._get_fields().items():
-            if (not field.is_reference and name not in self._READ_ONLY_FIELDS
-                    and field.default is not None):
-                include.add(name)
-                # Set default on instance so it matches what we insert (in case model init did not)
-                if name not in processed_data:
-                    object.__setattr__(self, name, field.default)
-        # return
-        for name, value in processed_data.items():
-            # object.__setattr__(self, name, value)
-            include.add(name)
-            if name in exclude:
-                exclude.remove(name)
-            else:
-                formatted_data[name] = value
-
-        for name, field in self._get_fields().items():
-            if name not in include or name in exclude:
-                continue
-            if field.is_reference:
-                continue
-            # Use field default when user did not pass this field (so INSERT and RETURNING match)
-            if name not in processed_data and field.default is not None:
-                instance_value = field.default
-            else:
-                instance_value = getattr(self, name)
-            formatted_data[name] = field.serialize(instance_value)
-
-        # perform insertion
-        if formatted_data:
-            sql = (f"INSERT INTO {self._get_table_name()} ({", ".join(formatted_data.keys())})\n"
-                f"VALUES ({", ".join("?" for v in formatted_data.values())})")
-        else:
-            sql = f"INSERT INTO {self._get_table_name()} DEFAULT VALUES"
-        # retrieve automatic columns from inserted row
-        self._execute_returning(sql=sql,
-                                parameters=list(formatted_data.values()),
-                                for_insertion=True)
-        # Re-apply defaults for fields we included from default (in case RETURNING order was wrong)
-        for name, field in self._get_fields().items():
-            if (not field.is_reference and name not in self._READ_ONLY_FIELDS
-                    and field.default is not None and name not in processed_data):
-                object.__setattr__(self, name, field.default)
-        # trigger
-        if hasattr(self, "__post_init__"):
-            self.__post_init__()
+        from . import query
+        query.insert_instance(self, init_data)
 
     # UPDATE
-
     def on_before_update(self, new_data):
-        """Apply changes to database"""
-        # ensure we're not trying to write read-only fields
-        self.check_read_only(new_data)
-        # fill SET statement
-        set_statement = self.process_data(new_data)
-        if not set_statement:
-            return
-        # fill WHERE statement
-        where_statement = {}
-        if isinstance(self, _WithPrimaryKey):
-            where_statement = {"id": self.id}
-        else:
-            raise NotImplementedError()
-
-        # compute SQL
-        sql = f"UPDATE {self._get_table_name()}\n"
-        sql += "\nSET " + ", ".join(f"{k} = ?" for k in set_statement)
-        if isinstance(self, _WithUpdatedAtTimestamp):
-            sql += ", updated_at = CURRENT_TIMESTAMP"
-        sql += "\nWHERE " + " AND ".join(f"{k} = ?" for k in where_statement)
-
-        # compute parameters
-        parameters = tuple(value
-                           for statement in (set_statement, where_statement)
-                           for value in statement.values())
-
-        # execute query
-        self._execute_returning(sql=sql,
-                                parameters=parameters)
+        """Apply changes to database."""
+        from . import query
+        query.update_instance(self, new_data)
 
     # INSERT or SELECT / UPDATE
     @classmethod
@@ -217,27 +118,21 @@ class Table(metaclass=TableMeta):
         return name in cls.model_fields
 
     @classmethod
-    @cache
-    def _get_fields(cls) -> dict[str, Field]:
-        """Return a mapping of field name to Field for all model fields."""
-        return {
-            name: Field.from_pydantic_info(cls, name, info)
-            for name, info in cls.model_fields.items()
-        }
+    def _get_fields(cls) -> dict[str, Column]:
+        """Return the mapping of field name to Column (set by TableMeta on the class)."""
+        return getattr(cls, "_columns", {})
 
     @classmethod
-    @cache
-    def _get_field(cls, name: str):
-        """Return the Field for the given name or column name; raises KeyError if missing."""
-        fields = cls._get_fields()
-        if name in fields:
-            return fields[name]
-        for field in fields.values():
-            if field.column_name == name:
-                return field
-        # Generic reference (Table) uses name_table and name_id columns
-        if name.endswith("_table") and name[:-6] in fields:
-            return fields[name[:-6]]
+    def _get_field(cls, name: str) -> Column:
+        """Return the Column for the given name or column name; raises KeyError if missing."""
+        columns = cls._get_fields()
+        if name in columns:
+            return columns[name]
+        for col in columns.values():
+            if col.column_name == name:
+                return col
+        if name.endswith("_table") and name[:-6] in columns:
+            return columns[name[:-6]]
         raise KeyError(f"No such field for {cls.__name__}: {name}")
 
     @classmethod
@@ -250,111 +145,47 @@ class Table(metaclass=TableMeta):
             if name not in cls._READ_ONLY_FIELDS
         }
 
-    # execute SQL
+    @classmethod
+    def _get_table_sql_creations(cls) -> list[str]:
+        """Return CREATE TABLE column fragments from mixins (e.g. id, created_at).
 
+        Collects TABLE_SQL_CREATIONS from the class MRO so mixins own their SQL.
+        Deduplicates by column name (first token) so each column appears once.
+        """
+        seen_columns = set()
+        statements = []
+        for base in cls.__mro__:
+            if hasattr(base, "TABLE_SQL_CREATIONS"):
+                for stmt in base.TABLE_SQL_CREATIONS:
+                    col = stmt.split()[0]
+                    if col not in seen_columns:
+                        seen_columns.add(col)
+                        statements.append(stmt)
+        return statements
+
+    # SQL execution (delegate to query module; kept for tests and internal callers)
     @classmethod
     def _execute(cls, sql: str, parameters=None, check=True) -> list[tuple]:
         """Run SQL and return fetched rows; optionally ensure table/columns exist first."""
-        if parameters is None:
-            parameters = []
-        if check and cls != Table and not cls._CHECKED_TABLE_EXISTENCE:
-            cls._create_table()
-            cls._add_columns()
-            cls._CHECKED_TABLE_EXISTENCE = True
-        with transaction(connection_name=cls._CONNECTION_NAME) as t:
-            cursor = t.execute(sql, parameters)
-            result = cursor.fetchall()
-            cursor.close()
-        return result
+        from . import query
+        return query.run_sql(cls, sql, parameters or [], ensure_structure=check)
 
     def _execute_returning(self, sql: str, parameters=None, for_insertion=False):
         """Execute SQL with RETURNING and set parsed values on self."""
-        if parameters is None:
-            parameters = []
-        # Use a list so RETURNING column order matches parsed row order
-        returned_fields = list(self._READ_ONLY_FIELDS)
-        if for_insertion:
-            for name, field in self._get_fields().items():
-                if (not field.is_reference and field.default is not None
-                        and name not in returned_fields):
-                    returned_fields.append(name)
-        if self._READ_ONLY_FIELDS:
-            sql += "\nRETURNING " + ", ".join(returned_fields)
-        rows = self._execute(sql, list(parameters))
-
-        # parse returned value & set them
-        for name, value in zip(returned_fields, rows[0]):
-            field = self._get_field(name)
-            parsed_value = field.parse(value)
-            if parsed_value is None and field.default is not None:
-                parsed_value = field.default
-            object.__setattr__(self, name, parsed_value)
-
-    # CREATE TABLE
+        from . import query
+        query.apply_returning(self, sql, parameters, for_insertion=for_insertion)
 
     @classmethod
     def _create_table(cls, created=None):
         """Create the table and referenced tables if they do not exist."""
-        if created is None:
-            created = set()
-        # create tables for references first
-        created.add(cls)
-        for field in cls._get_fields().values():
-            if field.is_reference:
-                for t in (field.base_type, field.secondary_type):
-                    if (inspect.isclass(t) and issubclass(t, Table)
-                            and t != Table and t not in created):
-                        t._create_table(created)
-        # initialize statements for table creation
-        statements = []
-        # id & created_at are special
-        if issubclass(cls, _WithPrimaryKey):
-            statements += ["id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT"]
-        if issubclass(cls, _WithCreatedAtTimestamp):
-            statements += ["created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"]
-        # other columns are easy
-        statements += sum((
-            list(field.sql_creations)
-            for field in cls._get_fields().values()
-            if field.name not in ("created_at", "id")
-        ), start=[])
-        # foreign keys
-        statements += [
-            f"FOREIGN KEY ({name}_id) REFERENCES {field.base_type._get_table_name()}(id)"
-            for name, field in cls._get_fields().items()
-            if field.is_reference and field.secondary_type is None
-            and field.base_type != Table
-        ]
-        # build & execute SQL
-        stmt_join = ",\n  ".join(statements)
-        sql = f"CREATE TABLE IF NOT EXISTS {cls._get_table_name()} (\n  {stmt_join})"
-        cls._execute(sql, check=False)
+        from . import query
+        query.create_table(cls, created)
 
     @classmethod
     def _add_columns(cls):
         """Add any missing columns to the existing table (SQLite ALTER TABLE)."""
-        tbl = cls._get_table_name()
-        rows = cls._execute(
-            f"SELECT name FROM pragma_table_info('{tbl}')", check=False
-        )
-        columns_names = {name for name, in rows}
-        new_fields = [field for field in cls._get_fields().values()
-                      if field.column_name not in columns_names]
-        for field in new_fields:
-            logger.info("ADD COLUMN %s.%s", field.table.__name__, field.name)
-            for sql_creation in field.sql_creations:
-                # if sql.
-                # if field.is_reference:
-                #     raise Exception("cannot add foreign key constraint on existing table")
-                try:
-                    cls._execute(
-                        f"ALTER TABLE {cls._get_table_name()} ADD COLUMN "
-                        f"{sql_creation}",
-                        check=False,
-                    )
-                except sqlite3.OperationalError as error:
-                    if "duplicate column name" not in error.args[0]:
-                        raise
+        from . import query
+        query.add_columns(cls)
 
     def check_read_only(self, data):
         """Check we are not attempting to alter read-only fields"""
@@ -417,16 +248,8 @@ class Table(metaclass=TableMeta):
     # DELETE
     def delete(self):
         """Delete the row (soft delete if _WithSoftDelete, else hard delete)."""
-        if isinstance(self, _WithSoftDelete):
-            tbl = self._get_table_name()
-            self._execute(
-                f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [self.id],
-            )
-        else:
-            self._execute(
-                f"DELETE FROM {self._get_table_name()} WHERE id = ?", [self.id]
-            )
+        from . import query
+        query.delete_instance(self)
 
     # SELECT
     @classmethod
@@ -434,82 +257,46 @@ class Table(metaclass=TableMeta):
              with_deleted=False, preload: str | list[str] = None,
              **criteria) -> "Table":
         """Load by criteria; supports preload paths and optional soft-delete."""
-        original_criteria = criteria
-        processed_criteria = cls.process_data(criteria, for_filtering=True)
-        if not preload:
-            preload = []
-        if isinstance(preload, str):
-            preload = [preload]
-        cls._ensure_lazy_loaders()
-        from .join_info import JoinInfo
-        join_info = JoinInfo(model=cls)
-        for path_str in preload:
-            path = path_str.split(".")
-            join_info.add_children(path)
-
-        # SELECT
-        sql = "SELECT "
-        sql += ", ".join(join_info.get_columns_statements())
-        sql += "\n"
-        # FROM / JOIN
-        sql += "\n".join(join_info.get_tables_statements())
-
-        # WHERE
-        values = []
-        sql += "\nWHERE 1 = 1"
-        if issubclass(cls, _WithTimestamps) and not with_deleted:
-            processed_criteria |= {"deleted_at": None}
-        if processed_criteria:
-            # for name, value in cls.process_data(processed_criteria).items():
-            for name, value in processed_criteria.items():
-                field = cls._get_field(name)
-                json_wrap = (
-                    cls._has_field(name) and field.sql_is_json
-                    and not isinstance(original_criteria.get(name), str)
-                )
-                # column
-                if json_wrap:
-                    sql += f"\nAND JSON({cls._get_table_name()}.{name})"
+        from .expressions import ColumnExpression
+        from .query import Query, _path_to_expression, _pk_name, _stored_pk
+        preload_list = [preload] if isinstance(preload, str) else (preload or [])
+        root = cls._root_expression()
+        q = Query(cls)
+        if preload_list:
+            select_exprs = [root.get_column_expression(_pk_name(cls))]
+            for p in preload_list:
+                e = _path_to_expression(root, p)
+                if e is not None:
+                    select_exprs.append(e)
+            q = q.clone_query_with(select_expressions=select_exprs)
+        if with_deleted and issubclass(cls, _WithSoftDelete):
+            q = q.include_deleted()
+        if criteria:
+            stmts = []
+            for k, v in criteria.items():
+                field = cls._get_field(k)
+                if field.is_reference and field.secondary_type is None:
+                    col = root.get_column_expression(field.column_name)
+                    val = _stored_pk(v) if (hasattr(v, "_get_table_name") and not isinstance(v, type)) else v
+                    stmts.append(col == val)
+                    # Generic ref (Table): also filter by _table so ref_id alone doesn't match another table's row
+                    if field.base_type is Table and v is not None and hasattr(v, "_get_table_name") and not isinstance(v, type):
+                        table_col = ColumnExpression(table_expression=root, name=f"{k}_table")
+                        stmts.append(table_col == v._get_table_name())
                 else:
-                    sql += f"\nAND {cls._get_table_name()}.{name}"
-                # comparison
-                if value is None:
-                    sql += " IS NULL"
-                else:
-                    if json_wrap:
-                        sql += " = JSON(?)"
-                    else:
-                        sql += " = ?"
-                    values.append(value)
-
-        # ORDER & LIMIT
-        order_columns = []
-        if issubclass(cls, _WithTimestamps):
-            order_columns += ["created_at"]
-        elif issubclass(cls, _WithVersion):
-            order_columns += list(cls._VERSIONING_ALONG)
-            order_columns += ["version"]
-        else:
-            order_columns += ["id"]
-        order_dir = " DESC" if reverse_order else ""
-        sql += "\nORDER BY " + ", ".join(
-            f"{cls._get_table_name()}.{column}{order_dir}"
-            for column in order_columns
-        )
-        if not as_collection:
-            sql += "\nLIMIT 1"
-
-        # execute & return result
+                    stmts.append(getattr(root, k) == v)
+            q = q.where(*stmts)
+        if not reverse_order:
+            if issubclass(cls, _WithTimestamps):
+                q = q.order_by(root.get_column_expression("created_at"))
+            elif issubclass(cls, _WithVersion):
+                along = list(getattr(cls, "_VERSIONING_ALONG", ())) + ["version"]
+                q = q.order_by(*[root.get_column_expression(a) for a in along])
+            else:
+                q = q.order_by(root.get_column_expression(_pk_name(cls)))
         if as_collection:
-            rows = cls._execute(sql, values)
-            return [
-                join_info.get_instance(row)
-                for row in rows
-            ]
-        rows = cls._execute(sql, values)
-        if not rows:
-            return None
-        return join_info.get_instance(rows[0])
+            return q.all()
+        return q.first()
 
     @classmethod
     def load_all(cls, **criteria) -> list["Table"]:
@@ -522,6 +309,12 @@ class Table(metaclass=TableMeta):
     def _get_table_name(cls) -> str:
         """Return the database table name (default: lowercased class name)."""
         return cls.__name__.lower()
+
+    @classmethod
+    def _root_expression(cls):
+        """Return the root TableExpression for this table (for building query expressions)."""
+        from .expressions import TableExpression
+        return TableExpression(table=cls, parent=None, path=())
 
     @classmethod
     def _suspend_validation(cls):
@@ -552,6 +345,11 @@ class Table(metaclass=TableMeta):
         """Attach a property on the class that loads the reference for `name` on first access."""
         def lazy_loader(self):
             if not name in self.__dict__:
+                warnings.warn(
+                    f"Lazy loading '{name}' on {cls.__name__}: consider preloading (e.g. select or load with this path) to avoid N+1 queries.",
+                    UserWarning,
+                    stacklevel=2,
+                )
                 model, identifier = self._lazy_joins[name]
                 if inspect.isclass(model) and issubclass(model, Table):
                     value = None if identifier is None else model.load(id=identifier)

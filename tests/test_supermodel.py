@@ -406,7 +406,8 @@ def test_supermodel_roundtrip_complex_type():
 
 def test_supermodel_roundtrip_supermodel_subclass_as_type():
     """Round-trip Container with content_type=User (SuperModel subclass as type, from __main__)."""
-    class User(SuperModel):
+    class UserRoundtripType(SuperModel):
+        """Unique name to avoid collision with other User subclasses in the test suite."""
         name: str
         age: int
 
@@ -414,10 +415,10 @@ def test_supermodel_roundtrip_supermodel_subclass_as_type():
         model_config = {"arbitrary_types_allowed": True}
         content_type: type
 
-    container = Container(content_type=User)
+    container = Container(content_type=UserRoundtripType)
     serialized = container.model_dump(mode="json")
     reconstructed = Container.model_validate(serialized)
-    assert reconstructed.content_type == User
+    assert reconstructed.content_type == UserRoundtripType
 
 
 # --- trigger ---
