@@ -22,6 +22,9 @@ from .expressions import (
     ALIAS_SEPARATOR,
     Expression,
     NaryOperatorExpression,
+    UnaryOperatorExpression,
+    FunctionExpression,
+    LikeExpression,
     TableExpression,
     ColumnExpression,
     OrderExpression,
@@ -155,7 +158,7 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
                 continue
             seen_paths.add(prefix)
             try:
-                e = query._resolve_user_path(prefix)
+                e = query.resolve(prefix)
             except (AttributeError, ValueError, KeyError):
                 continue
             if not isinstance(e, TableExpression):
@@ -217,6 +220,7 @@ class Query(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     table: type[Table]
+
     """The Table model this query targets."""
     select_expressions: list[Expression] = Field(default_factory=list, exclude=True)
     """Column/table expressions for SELECT and preload."""
@@ -230,6 +234,21 @@ class Query(BaseModel):
     """Optional LIMIT (stored to avoid shadowing the limit() method)."""
     with_deleted: bool = False
     """If True, include soft-deleted rows (only valid for _WithSoftDelete tables)."""
+
+    def _validate_expression_root(self, column: Expression) -> None:
+        """Walk expression tree and raise ValueError if any ColumnExpression/TableExpression has a different root."""
+        if isinstance(column, (ColumnExpression, TableExpression)):
+            if column.root_table is not self.table:
+                raise ValueError(
+                    f"Expression has root table {column.root_table.__name__} but query is for {self.table.__name__}; "
+                    f"use the query's table for all expressions (e.g. {self.table.__name__}.book.title)"
+                )
+        elif isinstance(column, OrderExpression):
+            self._validate_expression_root(column.column_expression)
+        elif isinstance(column, ArgumentedExpression):
+            for a in column.arguments:
+                if isinstance(a, Expression):
+                    self._validate_expression_root(a)
 
     @property
     def _connection(self):
@@ -308,20 +327,33 @@ class Query(BaseModel):
             return parent
         return parent + ALIAS_SEPARATOR + ALIAS_SEPARATOR.join(walk)
 
-    def _resolve_user_path(self, path_str: str) -> ColumnExpression | TableExpression:
-        """Resolve a user path string (e.g. 'name', 'book.title', 'book__title') to a ColumnExpression or TableExpression."""
-        path_str = path_str.replace("__", ".")
-        parts = path_str.split(".")
-        e: ColumnExpression | TableExpression = self.table._root_expression()
-        for p in parts:
-            if isinstance(e, TableExpression):
-                e = e.get_column_expression(p)
-            else:
-                raise ValueError(
-                    f"Cannot resolve path '{path_str}': '{p}' is not a table (column expressions cannot be traversed)"
-                )
-        assert isinstance(e, (ColumnExpression, TableExpression))
-        return e
+    def resolve(
+        self, column: str | ColumnExpression | TableExpression
+    ) -> ColumnExpression | TableExpression:
+        """Resolve a path string or validate an expression. Strings are resolved from the query's root.
+        ColumnExpression/TableExpression are validated to have the same root as the query.
+
+        Raises ValueError if a passed expression has a different root table.
+        """
+        if isinstance(column, str):
+            path_str = column.replace("__", ".")
+            parts = path_str.split(".")
+            e: ColumnExpression | TableExpression = self.table._root_expression()
+            for p in parts:
+                if isinstance(e, TableExpression):
+                    e = e.get_column_expression(p)
+                else:
+                    raise ValueError(
+                        f"Cannot resolve path '{path_str}': '{p}' is not a table (column expressions cannot be traversed)"
+                    )
+            assert isinstance(e, (ColumnExpression, TableExpression))
+            return e
+        if isinstance(column, (ColumnExpression, TableExpression)):
+            self._validate_expression_root(column)
+            return column
+        raise TypeError(
+            f"resolve requires str, ColumnExpression, or TableExpression; got {type(column)}"
+        )
 
     def _where_kwargs_to_expressions(self, kwargs: dict[str, Any]) -> list[Expression]:
         """Convert Django-style where(**kwargs) into a list of expressions (ANDed by caller)."""
@@ -336,7 +368,7 @@ class Query(BaseModel):
                 path_str = ".".join(parts)
             if not path_str.strip():
                 raise ValueError(f"where kwargs key {key!r} must include a field path (e.g. name__icontains or foo)")
-            expr = self._resolve_user_path(path_str)
+            expr = self.resolve(path_str)
             # For relation (TableExpression) + isnull, delegate to expr._isnull (uses FK column)
             if isinstance(expr, TableExpression) and lookup == "isnull":
                 result.append(expr._isnull(value))
@@ -386,10 +418,12 @@ class Query(BaseModel):
                 if c is not self.table:
                     raise ValueError("Cannot select another table directly")
                 normalized.append(c._expression)
-            elif isinstance(c, str):
-                normalized.append(self._resolve_user_path(c))
+            elif isinstance(c, (str, ColumnExpression, TableExpression)):
+                normalized.append(self.resolve(c))
             else:
-                normalized.append(c)
+                raise TypeError(
+                    f"select requires Table class, str, ColumnExpression, or TableExpression; got {type(c)}"
+                )
         return self.clone_query_with(select_expressions=self.select_expressions + normalized)
 
     def where(self, *statements: Expression, **kwargs: Any) -> Query:
@@ -400,6 +434,8 @@ class Query(BaseModel):
             where(name__icontains="e", value__lt=42)
             where(foo="bar")
         """
+        for stmt in statements:
+            self._validate_expression_root(stmt)
         new_exprs = list(self.where_expressions) + list(statements)
         if kwargs:
             new_exprs.extend(self._where_kwargs_to_expressions(kwargs))
@@ -431,11 +467,13 @@ class Query(BaseModel):
                     raise ValueError("Cannot order by another table")
                 order = order._expression
             if isinstance(order, OrderExpression):
+                self._validate_expression_root(order)
                 order_by_expressions.append(order)
-            elif isinstance(order, ColumnExpression):
-                order_by_expressions.append(OrderExpression(column_expression=order, desc=False))
-            elif isinstance(order, TableExpression):
-                order_by_expressions.append(OrderExpression(column_expression=order.get_column_expression("id"), desc=False))
+            elif isinstance(order, (ColumnExpression, TableExpression)):
+                resolved = self.resolve(order)
+                if isinstance(resolved, TableExpression):
+                    resolved = resolved.get_column_expression("id")
+                order_by_expressions.append(OrderExpression(column_expression=resolved, desc=False))
             else:
                 raise TypeError(f"order_by requires table class, OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
         return self.clone_query_with(order_by_expressions=order_by_expressions)

@@ -313,6 +313,71 @@ class TestQueryWhereKwargsAndFilter:
         assert row2 is not None and row2.ref.id == r2.id and row2.ref.__class__ == Ref2
 
 
+class TestQueryWhereExpressionStyleNested:
+    """Expression-style where() with chained relation paths (e.g. A.book.title.icontains)."""
+
+    def test_where_nested_icontains_preloads_and_filters(self, setup_db, expect_lazy_loads):
+        """where(A.book.title.icontains('the')) filters by joined column and preloads book (no lazy load)."""
+        class Book(Table, with_timestamps=True):
+            title: str = ""
+
+        class User(Table, with_timestamps=True):
+            name: str = ""
+            book: Book | None = None
+
+        b1 = Book(title="The Python Guide")
+        b2 = Book(title="Ruby Basics")
+        b3 = Book(title="The Art of SQL")
+        u1 = User(name="alice", book=b1)
+        u2 = User(name="bob", book=b2)
+        u3 = User(name="carol", book=b3)
+
+        q = Query(table=User).where(User.book.title.icontains("the"))
+        assert "LEFT JOIN" in q.sql
+        assert "book" in q.sql.lower()
+        rows = list(q)
+
+        assert len(rows) == 2
+        row_ids = {r.id for r in rows}
+        assert row_ids == {u1.id, u3.id}
+        assert u2.id not in row_ids
+
+        titles = {r.book.title for r in rows}
+        assert titles == {"The Python Guide", "The Art of SQL"}
+        for row in rows:
+            assert row.book is not None
+            assert "the" in row.book.title.lower()
+            assert row.name in ("alice", "carol")
+            assert isinstance(row, User)
+            assert isinstance(row.book, Book)
+
+        rows_sorted = sorted(rows, key=lambda r: r.name)
+        assert rows_sorted[0].name == "alice"
+        assert rows_sorted[0].book.id == b1.id
+        assert rows_sorted[0].book.title == "The Python Guide"
+        assert rows_sorted[1].name == "carol"
+        assert rows_sorted[1].book.id == b3.id
+        assert rows_sorted[1].book.title == "The Art of SQL"
+
+        expect_lazy_loads.expect(0)
+
+    def test_where_nested_icontains_no_match_returns_empty(self, setup_db):
+        """where(A.book.title.icontains('nonexistent')) returns empty list."""
+        class Book(Table, with_timestamps=True):
+            title: str = ""
+
+        class User(Table, with_timestamps=True):
+            name: str = ""
+            book: Book | None = None
+
+        b = Book(title="Python")
+        User(name="alice", book=b)
+
+        q = Query(table=User).where(User.book.title.icontains("nonexistent"))
+        rows = list(q)
+        assert rows == []
+
+
 class TestQueryOrderAndLimit:
     """Test order_by and limit."""
 
@@ -606,48 +671,73 @@ class TestQueryJoin:
 
 
 class TestResolveUserPathAndSelectString:
-    """Query._resolve_user_path and Query.select with path strings."""
+    """Query.resolve and Query.select with path strings."""
 
-    def test_resolve_user_path_root_column(self, setup_db):
-        """Query._resolve_user_path('name') returns the root column expression."""
+    def test_resolve_root_column(self, setup_db):
+        """Query.resolve('name') returns the root column expression."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        expr = Query(table=A)._resolve_user_path("name")
+        expr = Query(table=A).resolve("name")
         assert expr.path_str == "name"
         assert "name" in Query(table=A).select(expr).sql
 
-    def test_resolve_user_path_nested_dot(self, setup_db):
-        """Query._resolve_user_path('book.title') returns the nested column expression."""
+    def test_resolve_nested_dot(self, setup_db):
+        """Query.resolve('book.title') returns the nested column expression."""
         class B(Table, with_timestamps=True):
             title: str = ""
 
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        expr = Query(table=A)._resolve_user_path("book.title")
+        expr = Query(table=A).resolve("book.title")
         assert expr.path_str == "book.title"
         assert "title" in Query(table=A).select(expr).sql and "JOIN" in Query(table=A).select(expr).sql
 
-    def test_resolve_user_path_nested_double_underscore(self, setup_db):
-        """Query._resolve_user_path('book__title') is treated as 'book.title'."""
+    def test_resolve_nested_double_underscore(self, setup_db):
+        """Query.resolve('book__title') is treated as 'book.title'."""
         class B(Table, with_timestamps=True):
             title: str = ""
 
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        expr = Query(table=A)._resolve_user_path("book__title")
+        expr = Query(table=A).resolve("book__title")
         assert expr.path_str == "book.title"
 
-    def test_resolve_user_path_traverse_column_raises(self, setup_db):
-        """_resolve_user_path('name.foo') raises: cannot traverse column expression (query.py ~563)."""
+    def test_resolve_traverse_column_raises(self, setup_db):
+        """resolve('name.foo') raises: cannot traverse column expression (query.py ~563)."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
         q = Query(table=A)
         with pytest.raises(ValueError, match="not a table"):
-            q._resolve_user_path("name.foo")
+            q.resolve("name.foo")
+
+    def test_resolve_validates_root_for_expression(self, setup_db):
+        """resolve(ColumnExpression) raises if expression has different root than query."""
+        class Author(Table, with_timestamps=True):
+            name: str = ""
+
+        class Post(Table, with_timestamps=True):
+            title: str = ""
+            author: Author | None = None
+
+        q = Query(table=Post)
+        with pytest.raises(ValueError, match="root table Author but query is for Post"):
+            q.resolve(Author.name)
+
+    def test_where_raises_for_wrong_root_expression(self, setup_db):
+        """where(Author.name == 'x') raises when query is for Post."""
+        class Author(Table, with_timestamps=True):
+            name: str = ""
+
+        class Post(Table, with_timestamps=True):
+            title: str = ""
+            author: Author | None = None
+
+        with pytest.raises(ValueError, match="root table Author but query is for Post"):
+            Post.q().where(Author.name == "x")
 
     def test_select_column_expression_direct(self, setup_db):
         """select(ColumnExpression) appends expression directly (query.py ~618 else branch)."""
@@ -1584,17 +1674,17 @@ class TestQueryCoverageHelpers:
             book: B | None = None
 
         q = Query(table=A)
-        book_te = q._resolve_user_path("book")
+        book_te = q.resolve("book")
         fake_book_name = TableExpression(parent=book_te, table=B, path=("book", "name"))
 
-        def patched_resolve(path):
+        def patched_resolve(self, path):
             if path == "book":
                 return book_te
             if path == "book.name":
                 return fake_book_name
-            return Query._resolve_user_path(q, path)
+            return Query.resolve.__get__(self, Query)(path)
 
-        with patch.object(q, "_resolve_user_path", patched_resolve):
+        with patch.object(Query, "resolve", patched_resolve):
             result = _collect_table_expressions(q, ["book.name"])
         assert len(result) >= 1
         assert result[0].table is A

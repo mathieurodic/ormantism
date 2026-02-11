@@ -8,16 +8,15 @@ Ongoing and potential improvements for the Ormantism project. See [README.md](RE
 
 - **In-code TODO**: In `ormantism/utils/supermodel.py` (around line 238) there is a `# TODO: better validation here` when applying updates for type-annotation fields. Replace with proper validation or document the current behaviour.
 - **Type hints**: Tighten types where they are loose or wrong:
-  - `ormantism/connection.py`: `name: str=None` → `name: str | None = None` (or `Optional[str] = None`).
-  - `ormantism/transaction.py`: use `typing.Callable` instead of `callable` for type hints.
+  - `ormantism/transaction.py`: use `typing.Callable` instead of `callable` for type hints (e.g. `connection_factory: callable`).
   - `ormantism/utils/make_hashable.py` and `ormantism/utils/serialize.py`: use `typing.Any` instead of lowercase `any`.
 
 ---
 
 ## Testing
 
-- **Test environment**: `tests/conftest.py` uses `/tmp` and `request.function`. Consider using pytest’s `tmp_path` (or `tmpdir`) for DB paths to avoid hardcoded paths and improve portability.
-- **Test style**: In `tests/test_connection.py`, replace `print()` with assertions or structured logging, and avoid bare `except` where possible.
+- **Test environment**: `tests/conftest.py` uses `/tmp` and `request.function` when `ORMANTISM_DB_FILE` is set. Consider using pytest’s `tmp_path` for DB paths to improve portability.
+- **Test style**: In `tests/connection/test_connection.py`, replace `print()` with assertions or structured logging, and avoid bare `except` where possible (e.g. `except FileNotFoundError:pass`).
 - **CI matrix**: `pyproject.toml` has `requires-python = ">=3.12"`. CI only runs 3.12. Consider adding 3.13 (and optionally 3.12 + 3.13 matrix) to catch compatibility issues.
 - **Optional test deps**: Add an optional dependency group in `pyproject.toml` for tests (e.g. `pytest`, `pytest-cov`) so contributors can install with `pip install -e ".[tests]"`.
 
@@ -32,7 +31,7 @@ Ongoing and potential improvements for the Ormantism project. See [README.md](RE
 
 ## Documentation and contributing
 
-- **Contributing**: The README “Contributing” section is minimal. Consider linking to [TODO.md](TODO.md), and optionally adding issue/PR templates and a short “Development setup” (install with `[tests]`, run pytest, run pylint).
+- **Contributing**: The README now links to [TODO.md](TODO.md). Optionally add issue/PR templates and a short “Development setup” (install with `[tests]`, run pytest, run pylint).
 - **Limitations**: The README already lists limitations (no migrations, simple queries, etc.). Optionally add a short “Future work” or “Improvements” pointer to this file.
 
 ---

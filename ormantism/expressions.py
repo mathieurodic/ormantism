@@ -308,13 +308,13 @@ class LikeExpression(ArgumentedExpression):
     @property
     def values(self) -> tuple[Any, ...]:
         """Bound values for the composed LIKE (same composition as .sql so placeholder count matches)."""
-        result = list(self._argument_to_values(self.arguments[0]))
+        result = self._argument_to_values(self.arguments[0])
         if self.fuzzy_start:
-            result.append("%")
-        result.extend(self._argument_to_values(self.arguments[1]))
+            result += ("%",)
+        result += self._argument_to_values(self.arguments[1])
         if self.fuzzy_end:
-            result.append("%")
-        return tuple(result)
+            result += ("%",)
+        return result
 
 
 class TableExpression(Expression):
@@ -363,6 +363,14 @@ class TableExpression(Expression):
         """Dot-separated path (e.g. ``books``, ``books.author``)."""
         return ".".join(self.path)
 
+    @property
+    def root_table(self):
+        """The root Table class for this table expression (walk up parent until root)."""
+        te = self
+        while te.parent is not None:
+            te = te.parent
+        return te.table
+
     @cached_property
     def sql_alias(self) -> str:
         """SQL alias for this table (e.g. ``user____books`` for path ``("books",)``)."""
@@ -407,6 +415,11 @@ class ColumnExpression(Expression):
     def path_str(self) -> str:
         """Dot-separated path to this column (e.g. ``id``, ``books.title``)."""
         return ".".join(self.table_expression.path + (self.name,))
+
+    @property
+    def root_table(self):
+        """The root Table class for this column (from its table expression)."""
+        return self.table_expression.root_table
 
     @cached_property
     def sql(self) -> str:

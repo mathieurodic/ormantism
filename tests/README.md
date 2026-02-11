@@ -46,6 +46,36 @@ Tests for `connect()`, `_get_connection()`, and database URL handling: validatio
 
 ---
 
+## dialects
+
+Tests for `ormantism.dialects`: dialect base, scheme lookup, and DB-specific implementations.
+
+### dialects/test_dialects_base.py
+
+Tests for `ormantism.dialects.base`: `Dialect`, `_DialectF`, and function lookups.
+
+### dialects/test_dialects_init.py
+
+Tests for `ormantism.dialects`: `get_dialect_for_scheme`, supported schemes (sqlite, mysql, postgresql, sqlserver), and dialect registration.
+
+### dialects/test_dialects_mysql.py
+
+Tests for MySQL dialect: connection and SQL generation.
+
+### dialects/test_dialects_postgres.py
+
+Tests for PostgreSQL dialect: connection and SQL generation.
+
+### dialects/test_dialects_sqlite.py
+
+Tests for SQLite dialect: connection and SQL generation.
+
+### dialects/test_dialects_sqlserver.py
+
+Tests for SQL Server dialect: connection and SQL generation.
+
+---
+
 ## expressions
 
 Tests for `ormantism.expressions`: expression types, operators, and integration with tables.
@@ -102,13 +132,17 @@ Tests for Table CRUD, timestamps, relationships, lazy loading, and versioning: b
 
 Tests for Table lifecycle hooks and `load_or_create`: `on_after_create`, `on_before_update`, and `load_or_create` (search fields, updates, reference handling).
 
+### table/test_table_mixins.py
+
+Tests for `ormantism.table_mixins`: `_WithTimestamps._transform_query`, `_WithVersion._transform_query`, and mixin attributes.
+
 ### table/test_table_metadata_and_equality.py
 
 Tests for Table metadata and equality: `_get_fields`, `_get_table_name`, `_get_field`, options inheritance (e.g. versioning_along), `__eq__`, `__hash__`, and `__deepcopy__`.
 
 ### table/test_table_schema_and_delete.py
 
-Tests for Table schema and delete: `_create_table`, `_add_columns`, `process_data` (refs, list refs, BaseModel), `delete()` (soft vs hard), and `load()` ordering (versioned and non-versioned).
+Tests for Table schema and delete: `_create_table`, `_add_columns`, `process_data` (refs, list refs, BaseModel), `delete()` (soft vs hard), and `load()` default ordering.
 
 ---
 
