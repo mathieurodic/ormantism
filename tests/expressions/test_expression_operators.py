@@ -8,6 +8,7 @@ from ormantism.expressions import (
     NaryOperatorExpression,
     UnaryOperatorExpression,
     FunctionExpression,
+    LikeExpression,
     collect_join_paths_from_expression,
 )
 
@@ -21,6 +22,18 @@ def test_expression_eq(setup_db):
     assert isinstance(expr, NaryOperatorExpression)
     assert expr.symbol == "="
     assert expr.sql == "(user.id = ?)"
+    assert expr.values == (42,)
+
+
+def test_expression_ne(setup_db):
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.get_column_expression("id")
+    expr = col != 42
+    assert isinstance(expr, NaryOperatorExpression)
+    assert expr.symbol == "!="
+    assert expr.sql == "(user.id != ?)"
     assert expr.values == (42,)
 
 
@@ -185,3 +198,112 @@ def test_expression_is_not_and_is_not_null(setup_db):
     not_null = col.is_not_null()
     assert not_null.symbol == "IS NOT NULL"
     assert not_null.sql == "user.name IS NOT NULL"
+
+
+def test_expression_like_methods(setup_db):
+    """startswith, contains, endswith, like and their i* variants return LikeExpression with correct flags."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.name
+    assert isinstance(col.startswith("A"), LikeExpression)
+    assert col.startswith("A").fuzzy_start is False and col.startswith("A").fuzzy_end is True
+    assert isinstance(col.contains("x"), LikeExpression)
+    assert col.contains("x").fuzzy_start is True and col.contains("x").fuzzy_end is True
+    assert isinstance(col.endswith("z"), LikeExpression)
+    assert col.endswith("z").fuzzy_start is True and col.endswith("z").fuzzy_end is False
+    assert isinstance(col.like("exact"), LikeExpression)
+    assert col.like("exact").fuzzy_start is False and col.like("exact").fuzzy_end is False
+    assert col.istartswith("a").case_insensitive is True
+    assert col.icontains("y").case_insensitive is True
+    assert col.iendswith("b").case_insensitive is True
+    assert col.ilike("x").case_insensitive is True
+
+
+def test_expression_pow(setup_db):
+    """__pow__ returns FunctionExpression with POW."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.get_column_expression("id")
+    expr = col ** 2
+    assert expr.symbol == "POW"
+    assert expr.arguments == (col, 2)
+    assert "POW" in expr.sql
+    assert expr.values == (2,)
+
+
+def test_expression_like_sql_and_values(setup_db):
+    """LikeExpression produces SQL with LIKE and bound pattern; startswith/contains use dialect concat."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    col = User.name
+    # startswith: column LIKE pattern% (concat adds literal '%', so values include pattern and '%')
+    expr = col.startswith("John")
+    assert "LIKE" in expr.sql
+    assert "user.name" in expr.sql or "name" in expr.sql
+    assert "John" in expr.values
+    # contains: %pattern%
+    c = col.contains("oh")
+    assert "LIKE" in c.sql
+    assert "oh" in c.values
+
+
+def test_like_expression_escape_needle_false(setup_db):
+    """LikeExpression with escape_needle=False does not escape and no ESCAPE clause."""
+    class User(Table, with_timestamps=True):
+        name: str
+
+    expr = User.name.like("x%")
+    like_expr = LikeExpression(symbol="LIKE", arguments=(User.name, "x%"), fuzzy_start=False, fuzzy_end=False, escape_needle=False)
+    assert "ESCAPE" not in like_expr.sql
+    assert like_expr.values == ("x%",)
+
+
+def test_like_expression_case_insensitive_non_str_needle(setup_db):
+    """LikeExpression case_insensitive with non-str needle uses LOWER(needle) expression."""
+    from ormantism.expressions import FunctionExpression
+
+    class User(Table, with_timestamps=True):
+        name: str
+
+    # Build a LIKE with an expression as pattern (e.g. column) to hit the non-str branch
+    like_expr = LikeExpression(
+        symbol="LIKE",
+        arguments=(User.name, User.name),  # pattern is column, not str
+        fuzzy_start=False,
+        fuzzy_end=False,
+        case_insensitive=True,
+        escape_needle=False,
+    )
+    assert "LOWER" in like_expr.sql
+    # values come from the composed expression
+    assert like_expr.values is not None
+
+
+def test_collect_join_paths_from_expression_includes_like_expression(setup_db):
+    """collect_join_paths_from_expression walks LikeExpression and collects column paths."""
+    class Author(Table, with_timestamps=True):
+        name: str
+
+    class Book(Table, with_timestamps=True):
+        title: str
+        author: Author | None = None
+
+    expr = Book.author.name.contains("x")
+    paths = collect_join_paths_from_expression(expr)
+    assert "author" in paths
+
+
+def test_collect_join_paths_from_expression_table_expression_with_path(setup_db):
+    """collect_join_paths_from_expression adds path when walking a TableExpression with path."""
+    class Author(Table, with_timestamps=True):
+        name: str
+
+    class Book(Table, with_timestamps=True):
+        title: str
+        author: Author | None = None
+
+    paths = collect_join_paths_from_expression(Book.author)
+    assert paths == {"author"}

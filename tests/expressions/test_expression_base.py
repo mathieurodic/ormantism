@@ -28,6 +28,13 @@ def test_expression_base_values_empty():
     assert expr.values == ()
 
 
+def test_expression_base_dialect_raises():
+    """Expression._dialect raises NotImplementedError when not overridden."""
+    expr = Expression.model_construct()
+    with pytest.raises(NotImplementedError, match="_dialect"):
+        _ = expr._dialect
+
+
 def test_function_expression_sql():
     expr = FunctionExpression(symbol="LOWER", arguments=("x",))
     assert expr.sql == "LOWER(?)"
@@ -64,7 +71,37 @@ def test_binary_operator_empty_symbol_raises():
         _ = expr.sql
 
 
+def test_nary_operator_empty_arguments_raises():
+    expr = NaryOperatorExpression(symbol="=", arguments=())
+    with pytest.raises(ValueError, match="at least one argument"):
+        _ = expr.sql
+
+
 def test_argumented_expression_values_recursion():
     inner = NaryOperatorExpression(symbol="=", arguments=("x", 1))
     outer = NaryOperatorExpression(symbol="AND", arguments=(inner, "y"))
     assert outer.values == ("x", 1, "y")
+
+
+def test_argumented_expression_dialect_raises_when_no_arg_has_dialect():
+    """ArgumentedExpression._dialect raises AttributeError when no argument has _dialect."""
+    expr = NaryOperatorExpression(symbol="=", arguments=(1, 2))
+    with pytest.raises(AttributeError, match="_dialect"):
+        _ = expr._dialect
+
+
+def test_argumented_expression_dialect_continues_when_arg_dialect_raises():
+    """ArgumentedExpression._dialect skips an argument whose _dialect raises AttributeError."""
+    class FakeExpr(Expression):
+        @property
+        def sql(self):
+            return "?"
+
+        @property
+        def _dialect(self):
+            raise AttributeError("_dialect")
+
+    fake = FakeExpr.model_construct()
+    expr = NaryOperatorExpression(symbol="=", arguments=(fake, 1))
+    with pytest.raises(AttributeError, match="_dialect"):
+        _ = expr._dialect

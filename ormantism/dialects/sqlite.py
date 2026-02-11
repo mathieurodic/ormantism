@@ -19,6 +19,7 @@ class SqliteDialect(Dialect):
 
     F: ClassVar[dict[str, callable]] = {
         "concat": lambda *args: NaryOperatorExpression(symbol="||", arguments=args),
+        "escape_for_like": lambda s: s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"),
     }
 
     def connect(self, url: str):

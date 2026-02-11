@@ -15,6 +15,7 @@ class MysqlDialect(Dialect):
 
     F: ClassVar[dict[str, callable]] = {
         "concat": lambda *args: FunctionExpression(symbol="CONCAT", arguments=args),
+        "escape_for_like": lambda s: s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"),
     }
 
     def connect(self, url: str):

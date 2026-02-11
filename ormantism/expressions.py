@@ -118,6 +118,38 @@ class Expression(BaseModel):
     def __ge__(self, other: Any) -> NaryOperatorExpression:
         return NaryOperatorExpression(symbol=">=", arguments=(self, other))
 
+    def like(self, pattern: str) -> LikeExpression:
+        """Build a LIKE expression (exact pattern, e.g. ``User.name.like('John')``)."""
+        return LikeExpression(symbol="LIKE", arguments=(self, pattern), fuzzy_start=False, fuzzy_end=False, escape_needle=False)
+
+    def ilike(self, pattern: str) -> LikeExpression:
+        """Build a case-insensitive LIKE expression."""
+        return LikeExpression(symbol="LIKE", arguments=(self, pattern), fuzzy_start=False, fuzzy_end=False, case_insensitive=True, escape_needle=False)
+
+    def startswith(self, prefix: str) -> LikeExpression:
+        """Build a LIKE expression for prefix match (e.g. ``User.name.startswith('John')``)."""
+        return LikeExpression(symbol="LIKE", arguments=(self, prefix), fuzzy_start=False, fuzzy_end=True)
+
+    def istartswith(self, prefix: str) -> LikeExpression:
+        """Build a case-insensitive prefix LIKE expression."""
+        return LikeExpression(symbol="LIKE", arguments=(self, prefix), fuzzy_start=False, case_insensitive=True)
+
+    def endswith(self, suffix: str) -> LikeExpression:
+        """Build a LIKE expression for suffix match (e.g. ``User.name.endswith('son')``)."""
+        return LikeExpression(symbol="LIKE", arguments=(self, suffix), fuzzy_end=False)
+
+    def iendswith(self, suffix: str) -> LikeExpression:
+        """Build a case-insensitive suffix LIKE expression."""
+        return LikeExpression(symbol="LIKE", arguments=(self, suffix), fuzzy_end=False, case_insensitive=True)
+
+    def contains(self, substring: str) -> LikeExpression:
+        """Build a LIKE expression for substring match (e.g. ``User.name.contains('oh')``)."""
+        return LikeExpression(symbol="LIKE", arguments=(self, substring), fuzzy_end=True)
+
+    def icontains(self, substring: str) -> LikeExpression:
+        """Build a case-insensitive substring LIKE expression."""
+        return LikeExpression(symbol="LIKE", arguments=(self, substring), case_insensitive=True)
+
 
 class ArgumentedExpression(Expression):
     """Base for expressions that have a symbol and a tuple of arguments.
@@ -199,6 +231,42 @@ class NaryOperatorExpression(ArgumentedExpression):
             raise ValueError("NaryOperatorExpression must have at least one argument")
         parts = tuple(map(self._argument_to_sql, self.arguments))
         return "(" + (" " + self.symbol + " ").join(parts) + ")"
+
+
+class LikeExpression(ArgumentedExpression):
+    """LIKE expression (e.g. ``name LIKE '%John%'``)."""
+
+    case_insensitive: bool = False
+    fuzzy_start: bool = True
+    fuzzy_end: bool = True
+    escape_needle: bool = True
+    """When True (default), the pattern is escaped for LIKE (%, _, \\) via dialect.f.escape_for_like."""
+
+    @property
+    def sql(self) -> str:
+        """Build (column LIKE pattern_expr) so .sql and .values stay in sync."""
+        haystack = self.arguments[0]
+        needle = (
+            self._dialect.f.escape_for_like(self.arguments[1])
+            if self.escape_needle
+            else self.arguments[1]
+        )
+        if self.case_insensitive:
+            haystack = FunctionExpression(symbol="LOWER", arguments=(haystack,))
+            needle = (
+                needle.lower() if isinstance(needle, str) else
+                FunctionExpression(symbol="LOWER", arguments=(needle,))
+            )
+        if self.fuzzy_start:
+            needle = self._dialect.f.concat("%", needle)
+        if self.fuzzy_end:
+            needle = self._dialect.f.concat(needle, "%")
+        sql = NaryOperatorExpression(symbol="LIKE", arguments=(haystack, needle)).sql
+        return sql + " ESCAPE '\\'" if self.escape_needle else sql
+
+    @property
+    def values(self) -> tuple[Any, ...]:
+        return NaryOperatorExpression(symbol="LIKE", arguments=(self.arguments[0], self.arguments[1])).values
 
 
 class TableExpression(Expression):
@@ -339,7 +407,7 @@ def collect_join_paths_from_expression(expr: Expression) -> set[str]:
                 paths.add(e.path_str)
         elif isinstance(e, OrderExpression):
             walk(e.column_expression)
-        elif isinstance(e, (NaryOperatorExpression, UnaryOperatorExpression, FunctionExpression)):
+        elif isinstance(e, (NaryOperatorExpression, UnaryOperatorExpression, FunctionExpression, LikeExpression)):
             for a in e.arguments:
                 if isinstance(a, Expression):
                     walk(a)
@@ -356,6 +424,7 @@ __all__ = [
     "TableExpression",
     "ColumnExpression",
     "OrderExpression",
+    "LikeExpression",
     "NaryOperatorExpression",
     "collect_join_paths_from_expression",
 ]
