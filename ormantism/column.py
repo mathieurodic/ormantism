@@ -20,6 +20,7 @@ from pydantic.fields import FieldInfo as PydanticFieldInfo
 from pydantic_core import PydanticUndefined
 
 from .utils.get_base_type import get_base_type
+from .utils.get_table_by_name import get_table_by_name
 from .utils.resolve_type import resolve_type
 from .utils.is_table import is_table, is_polymorphic_table
 from .utils.rebuild_pydantic_model import rebuild_pydantic_model
@@ -267,11 +268,30 @@ class Column(BaseModel):
             if self._is_polymorphic_ref:
                 if isinstance(value, str):
                     value = json.loads(value)
-                return value  # {"table": "...", "id": N} or [{...}, ...] - loaded lazily
-            # Non-polymorphic: raw id (scalar) or list of ids (list ref, stored as JSON)
+                # Polymorphic: create skeleton instances via make_empty_instance
+                if value is None:
+                    return None
+                if isinstance(value, dict) and "table" in value and "id" in value:
+                    ref_type = get_table_by_name(value["table"]) if value.get("table") else None
+                    return ref_type.make_empty_instance(value["id"]) if ref_type else None
+                if isinstance(value, list):
+                    result = []
+                    for it in value:
+                        if isinstance(it, dict) and it.get("table") and it.get("id"):
+                            ref_type = get_table_by_name(it["table"])
+                            result.append(
+                                ref_type.make_empty_instance(it["id"]) if ref_type else it
+                            )
+                        else:
+                            result.append(it)
+                    return result
+                return value
+            # Non-polymorphic: create skeleton instances
             if self.secondary_type is not None and isinstance(value, str):
                 value = json.loads(value)
-            return value
+            if self.secondary_type is None:
+                return self.reference_type.make_empty_instance(value)
+            return [self.reference_type.make_empty_instance(v) for v in (value or [])]
         if issubclass(self.base_type, enum.Enum):
             return self.base_type[value]
         if self.base_type == JSON:

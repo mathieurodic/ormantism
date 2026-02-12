@@ -78,16 +78,17 @@ def test_join_tree_unsupported_reference_type_raises(setup_db):
     real_columns = A._get_columns()
     patched_columns = {**real_columns, "unsupported_ref": bad_column}
 
-    tbl = A._get_table_name()
-    row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1, f"{tbl}{ALIAS_SEPARATOR}name": "x"}
+    row_dict = {"id": 1, "name": "x", "unsupported_ref": 42}
     with patch.object(A, "_get_columns", return_value=patched_columns):
-        q = Query(table=A)
+        rearranged = A.rearrange_data_for_hydration([row_dict])
+        root_pk = list(rearranged.keys())[0]
+        instance = A.make_empty_instance(root_pk)
         with pytest.raises(ValueError, match="Unexpected reference type"):
-            q.instance_from_row(row_dict)
+            instance.integrate_data_for_hydration(rearranged)
 
 
 def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
-    """Load without preload: list[ConcreteTable] is lazy; kids in __dict__ (JSON ids), kids loads on access."""
+    """Load without preload: list[ConcreteTable] has skeleton instances; kids lazy-loads on access."""
     class Child(Table, with_timestamps=True):
         x: int = 0
 
@@ -99,10 +100,12 @@ def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
     parent = Parent(kids=[c1, c2])
     loaded = Parent.load(id=parent.id)
     assert loaded is not None
+    kids = loaded.kids  # triggers lazy load
     assert "kids" in loaded.__dict__
-    assert loaded.__dict__["kids"] == [c1.id, c2.id]
-    # Access kids triggers one lazy load (loads the list)
-    assert len(loaded.kids) == 2
+    kids_list = loaded.__dict__["kids"]
+    assert len(kids_list) == 2
+    assert kids_list[0].id == c1.id and kids_list[1].id == c2.id
+    assert len(kids) == 2
     expect_lazy_loads.expect(1)
 
 

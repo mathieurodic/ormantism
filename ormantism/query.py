@@ -12,7 +12,6 @@ import inspect
 import json
 import logging
 import sqlite3
-from collections import defaultdict
 from typing import Any, Optional, Iterable
 
 from pydantic import BaseModel, Field
@@ -62,7 +61,6 @@ from .table_mixins import (
     _WithVersion,
     _WithUpdatedAtTimestamp,
 )
-from .utils.get_table_by_name import get_table_by_name
 from .utils.is_table import is_table
 
 logger = logging.getLogger("ormantism")
@@ -181,11 +179,20 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
 
 
 def _yield_columns_for_table_expression(te: TableExpression):
-    """Yield (alias, sql_expr) for every column of this table (1 field ↔ 1 column)."""
+    """Yield (alias, sql_expr) for every column of this table (1 field ↔ 1 column).
+
+    Alias uses path-only format (no root table prefix) to match rearrange_data_for_hydration.
+    Root: alias = field.name. Joined: alias = path____field.name.
+    """
     model = te.table
-    alias_prefix = te.sql_alias
+    sql_alias = te.sql_alias
+    if te.parent is None:
+        alias_prefix = ""
+    else:
+        alias_prefix = ALIAS_SEPARATOR.join(te.path) + ALIAS_SEPARATOR
     for field in model._get_columns().values():
-        yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}", f"{alias_prefix}.{field.name}"
+        alias = field.name if not alias_prefix else f"{alias_prefix}{field.name}"
+        yield alias, f"{sql_alias}.{field.name}"
 
 
 def _sql_from_join(table_expressions: list[TableExpression]) -> str:
@@ -567,215 +574,16 @@ class Query(BaseModel):
             values.extend(expression.values)
         return tuple(values)
 
-    def instance_from_row(self, row: dict[str, Any]) -> Table:
-        """Build a Table instance from a row dict mapping column alias to value.
-
-        Alias format uses ALIAS_SEPARATOR; path
-        from root is deduced by splitting alias and dropping the first segment (root table name).
-        """
-        root_alias = self.table._get_table_name()
-        data = defaultdict(lambda: defaultdict(dict))
-
-        for alias, value in row.items():
-            parts = alias.split(ALIAS_SEPARATOR)
-            path = parts[1:] if parts and parts[0] == root_alias else parts
-            if not path:
-                continue
-            d = data
-            for p in path[:-1]:
-                d = d[p]
-            d[path[-1]] = value
-
-        preload_paths = _select_paths_from_expressions(self.table, self.select_expressions)
-        return self._instance_from_data(self.table, dict(data), preload_paths)
-
-    def hydrate_instance(self, instance: Table, unparsed_data: list[dict[str, Any]]) -> None:
-        """Hydrate a Table instance from a row dict mapping column alias to unparsed value."""
-
-        # rearrange data per identifier
-        rearranged_data = {}
-        # go through each row
-        for unparsed_row in unparsed_data:
-            deep_defaultdict = lambda: defaultdict(deep_defaultdict)
-            data_per_table = deep_defaultdict()
-            # browse each column in the row
-            for alias, value in sorted(unparsed_row.keys()):
-                if ALIAS_SEPARATOR in alias:
-                    table_path, column_name = alias.rsplit(ALIAS_SEPARATOR, 1)
-                else:
-                    table_path, column_name = "", alias
-                data_per_table[table_path][column_name] = value
-            for table_path, values in sorted(data_per_table.keys()):
-                # go to where we need to integrate this
-                data = rearranged_data
-                if ALIAS_SEPARATOR in table_path:
-                    for part in table_path.split(ALIAS_SEPARATOR):
-                        data = data[part]
-                # do integration; do not repeat when the same identifier is found
-                # (successive rows may repeat same data for the same identifier when they are joined)
-                pk = values.pop("id")
-                if pk not in data:
-                    data[pk].update(values)
-        
-        # integrate data into the instance
-        assert len(rearranged_data) == 1
-        def integrate(o: object, data: dict[str, Any], table: type[Table]):
-            for pk, values in data.items():
-                for key, value in values.items():
-                    column = table._get_column(key)
-                    if column.is_reference:
-                        if column.is_collection:
-                            value = [table.load(id=id) for id in value]
-                        else:
-                            value = table.load(id=value)
-                        table = column.reference_type
-                    else:
-                        value = column.parse(value)
-                    setattr(o, key, value)
-
-        data = rearranged_data[next(iter(rearranged_data))]
-        instance.__dict__.update(data)
-
-    def build_instance(self, unparsed_data: dict[str, Any]) -> Table:
-        self.table._suspend_validation()
-        instance = self.table()
-        self.hydrate_instance(instance, unparsed_data)
-        self.table._resume_validation()
-        return instance
-
-    def _instance_from_data(
-        self,
-        model: type[Table],
-        data: dict,
-        preload_paths: set[str],
-        path_prefix: str = "",
-    ) -> Table:
-        """
-        Hydrate a Table instance recursively from nested dictionary data.
-
-        Args:
-            model: Table subclass being instantiated.
-            data: Flat or nested dictionary representing row and joined/ref data.
-            preload_paths: Set of dot-path strings indicating which referenced fields
-                are preloaded (as opposed to lazy).
-            path_prefix: The current path from the root (used for recursive preloads).
-
-        Returns:
-            An instance of model, with all direct values set, related fields either populated
-            (if preloaded) or left for lazy load (ref field absent; _id/_ids in __dict__).
-
-        Notes:
-            - Handles both direct references and collection references (e.g., lists of related rows).
-            - Supports partial row shapes where not all relationships are hydrated.
-            - Unresolved refs: keeps _id/_ids in instance __dict__; ref field is popped so
-              Table.__getattribute__ derives laziness from schema + __dict__ and loads on access.
-        """
-        _lazy_readonly: set[str] = set()   # Read-only scalars not fetched; will lazy-load on access
-
-        # Iterate through each field of the Table model
-        for name, field in model._get_columns().items():
-
-            if field.is_reference:
-                raw = data.get(name)
-                if isinstance(raw, str) and field._is_polymorphic_ref:
-                    raw = json.loads(raw)
-                elif isinstance(raw, str) and field.secondary_type is not None:
-                    raw = json.loads(raw)
-
-                # Scalar ref
-                if field.secondary_type is None:
-                    if raw is None:
-                        data[name] = None
-                    elif isinstance(raw, dict) and "table" in raw and "id" in raw:
-                        reference_type = get_table_by_name(raw["table"]) if raw["table"] else None
-                        segment = f"{path_prefix}.{name}".lstrip(".")
-                        # Preloaded: dict has extra keys (e.g. title); else lazy
-                        is_preloaded = any(k not in ("table", "id") for k in raw)
-                        if is_preloaded and (segment in preload_paths or any(p.startswith(segment + ".") for p in preload_paths)):
-                            data[name] = self._instance_from_data(
-                                reference_type,
-                                raw,
-                                preload_paths,
-                                segment,
-                            )
-                        else:
-                            data[name] = raw  # Lazy: __getattribute__ will load from raw
-                    elif isinstance(raw, int):
-                        nested = data.get(name)
-                        is_preloaded = isinstance(nested, dict) and "table" not in (nested or {})
-                        segment = f"{path_prefix}.{name}".lstrip(".")
-                        if is_preloaded and (segment in preload_paths or any(p.startswith(segment + ".") for p in preload_paths)):
-                            data[name] = self._instance_from_data(
-                                field.reference_type,
-                                nested,
-                                preload_paths,
-                                segment,
-                            )
-                        else:
-                            data[name] = raw  # Lazy
-                    else:
-                        data[name] = raw
-
-                # List ref
-                elif issubclass(field.base_type, (list, tuple, set)):
-                    references_ids = []
-                    references_types = []
-                    if isinstance(raw, list):
-                        if raw and isinstance(raw[0], dict):
-                            references_types = [
-                                get_table_by_name(item["table"]) if item.get("table") else None
-                                for item in raw
-                            ]
-                            references_ids = [item["id"] for item in raw]
-                        else:
-                            references_types = [field.reference_type] * len(raw)
-                            references_ids = raw or []
-                    data[name] = raw  # Keep raw for __getattribute__ lazy load
-
-                    segment = f"{path_prefix}.{name}".lstrip(".")
-                    if (
-                        segment in preload_paths
-                        or any(p.startswith(segment + ".") for p in preload_paths)
-                    ) and references_ids:
-                        data[name] = [
-                            ref_type.load(id=rid)
-                            for ref_type, rid in zip(references_types, references_ids)
-                        ]
-                    elif references_ids:
-                        pass  # data[name] = raw; __getattribute__ will lazy-load
-                    else:
-                        data[name] = []
-                else:
-                    raise ValueError("Unexpected reference type in _instance_from_data")
-            else:
-                # Normal (non-reference) field
-                if (
-                    name in getattr(model, "_READ_ONLY_COLUMNS", ())
-                    and name != "id"
-                    and name not in data
-                ):
-                    # Read-only field not fetched: will lazy-load on access
-                    _lazy_readonly.add(name)
-                else:
-                    data[name] = field.parse(data.get(name))
-
-        model._suspend_validation()         # Avoid validation until instance built
-
-        instance = model(**data)            # Hydrate a Table instance
-        instance.__dict__.update(data)      # Attach all data for non-pydantic usage
-
-        # Remove readonly from __dict__ so __getattribute__ will intercept on first access
-        for name in _lazy_readonly:
-            instance.__dict__.pop(name, None)
-
-        model._resume_validation()          # Turn validation back on
-
-        return instance
-
     def __iter__(self) -> Iterable[Table]:
         """Execute the query and yield each row as a Table instance (self.table)."""
-        for row_dict in self.rows(as_dicts=True):
-            yield self.instance_from_row(row_dict)
+        all_rows = self.rows(as_dicts=True)
+        if not all_rows:
+            return
+        rearranged = self.table.rearrange_data_for_hydration(all_rows)
+        for root_pk in rearranged:
+            instance = self.table.make_empty_instance(root_pk)
+            instance.integrate_data_for_hydration({root_pk: rearranged[root_pk]})
+            yield instance
 
     def all(self, limit: Optional[int] = None) -> list[Table]:
         """Return all matching rows as a list of Table instances (self.table).
@@ -966,11 +774,7 @@ class Query(BaseModel):
         init_data = init_data if init_data is not None else {}
 
         if instance is None:
-            cls._suspend_validation()
-            try:
-                instance = cls()
-            finally:
-                cls._resume_validation()
+            instance = cls.make_empty_instance(id=None)
 
         if getattr(instance, "id", None) is not None and instance.id >= 0:
             return instance
@@ -1038,7 +842,6 @@ class Query(BaseModel):
             rows = self.execute(sql, [], ensure_structure=True)
         id_field = cls._get_column("id")
         object.__setattr__(instance, "id", id_field.parse(rows[0][0]))
-        instance._mark_readonly_lazy()
 
         for name, field in cls._get_columns().items():
             if (

@@ -17,7 +17,8 @@ def test_parse_none():
     assert col.parse(None) is None
 
 
-def test_parse_reference_returns_raw():
+def test_parse_reference_returns_skeleton():
+    """parse() for ref columns creates skeleton instances via make_empty_instance."""
     class B(Table):
         value: int = 0
 
@@ -25,7 +26,10 @@ def test_parse_reference_returns_raw():
         ref: B | None = None
 
     col = Column.from_pydantic_info(C, "ref", C.model_fields["ref"])
-    assert col.parse(42) == 42
+    parsed = col.parse(42)
+    assert parsed is not None
+    assert parsed.__class__ == B
+    assert parsed.id == 42
 
 
 def test_parse_json_non_string_returns_value():

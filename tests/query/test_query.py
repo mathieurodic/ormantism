@@ -458,7 +458,7 @@ class TestQueryOrderAndLimit:
         q = Query(table=A)
         tbl = A._get_table_name()
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"ORDER BY {tbl}.id DESC"
         )
@@ -921,7 +921,7 @@ class TestCompiledSqlAndValues:
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"ORDER BY {tbl}.id DESC"
         )
@@ -937,7 +937,7 @@ class TestCompiledSqlAndValues:
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"WHERE ({tbl}.name = ?)\n"
             f"ORDER BY {tbl}.id DESC"
@@ -955,8 +955,8 @@ class TestCompiledSqlAndValues:
         sql, values = q.sql, q.values
         tbl = A._get_table_name()
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name, "
-            f"{tbl}.value AS {tbl}{ALIAS_SEPARATOR}value\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name, "
+            f"{tbl}.value AS value\n"
             f"FROM {tbl}\n"
             f"WHERE ({tbl}.name = ?)\n"
             f"AND ({tbl}.value = ?)\n"
@@ -980,7 +980,7 @@ class TestCompiledSqlAndValues:
             "LIMIT 2"
         )
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"WHERE {tbl}.id IN (\n{subquery}\n)\n"
             f"ORDER BY {tbl}.id DESC"
@@ -1003,7 +1003,7 @@ class TestCompiledSqlAndValues:
             "OFFSET 1"
         )
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"WHERE {tbl}.id IN (\n{subquery}\n)\n"
             f"ORDER BY {tbl}.id DESC"
@@ -1027,7 +1027,7 @@ class TestCompiledSqlAndValues:
             "LIMIT 1"
         )
         expected_sql = (
-            f"SELECT {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, {tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.id AS id, {tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"WHERE {tbl}.id IN (\n{subquery}\n)\n"
             f"ORDER BY {tbl}.id DESC"
@@ -1078,9 +1078,9 @@ class TestQueryOffset:
             "OFFSET 1"
         )
         expected_sql = (
-            f"SELECT {tbl}.updated_at AS {tbl}{ALIAS_SEPARATOR}updated_at, {tbl}.deleted_at AS {tbl}{ALIAS_SEPARATOR}deleted_at, "
-            f"{tbl}.created_at AS {tbl}{ALIAS_SEPARATOR}created_at, {tbl}.id AS {tbl}{ALIAS_SEPARATOR}id, "
-            f"{tbl}.name AS {tbl}{ALIAS_SEPARATOR}name\n"
+            f"SELECT {tbl}.updated_at AS updated_at, {tbl}.deleted_at AS deleted_at, "
+            f"{tbl}.created_at AS created_at, {tbl}.id AS id, "
+            f"{tbl}.name AS name\n"
             f"FROM {tbl}\n"
             f"WHERE {tbl}.id IN (\n{subquery}\n)\n"
             f"ORDER BY {tbl}.id ASC"
@@ -1212,11 +1212,11 @@ class TestQueryUpdateCoverage:
         assert rows[0].name == "x"
 
 
-class TestInstanceFromRowAndHydrationCoverage:
-    """instance_from_row skip root-only alias; preloaded list ref; nullable ref."""
+class TestHydrationFromRowDict:
+    """Hydration from row dict via rearrange_data_for_hydration + integrate_data_for_hydration."""
 
-    def test_instance_from_row_skips_alias_equal_to_root_only(self, setup_db):
-        """Row key that equals root table name (no separator) is skipped (path empty)."""
+    def test_hydration_from_row_dict(self, setup_db):
+        """Build instance from row dict using path-only alias format."""
         class A(Table, with_timestamps=False):
             name: str = ""
 
@@ -1226,9 +1226,11 @@ class TestInstanceFromRowAndHydrationCoverage:
         assert len(rows) == 1
         assert rows[0].id == 1
         assert rows[0].name == "x"
-        tbl = A._get_table_name()
-        row_dict = {tbl: 999, f"{tbl}{ALIAS_SEPARATOR}id": 1, f"{tbl}{ALIAS_SEPARATOR}name": "x"}
-        inst = q.instance_from_row(row_dict)
+        row_dict = {"id": 1, "name": "x"}
+        rearranged = A.rearrange_data_for_hydration([row_dict])
+        root_pk = list(rearranged.keys())[0]
+        inst = A.make_empty_instance(root_pk)
+        inst.integrate_data_for_hydration(rearranged)
         assert inst.id == 1
         assert inst.name == "x"
 
@@ -1290,21 +1292,19 @@ class TestInstanceFromRowAndHydrationCoverage:
         assert row.id == 1
         assert row.book is None
 
-    def test_instance_from_row_with_explicit_null_ref(self, setup_db):
-        """instance_from_row with row containing ref_id key set to None (covers 741-742)."""
+    def test_hydration_with_explicit_null_ref(self, setup_db):
+        """Hydration with row containing ref key set to None."""
         class B(Table, with_timestamps=True):
             title: str = ""
 
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        tbl = A._get_table_name()
-        row_dict = {
-            f"{tbl}{ALIAS_SEPARATOR}id": 1,
-            f"{tbl}{ALIAS_SEPARATOR}book": None,
-        }
-        q = Query(table=A)
-        inst = q.instance_from_row(row_dict)
+        row_dict = {"id": 1, "book": None}
+        rearranged = A.rearrange_data_for_hydration([row_dict])
+        root_pk = list(rearranged.keys())[0]
+        inst = A.make_empty_instance(root_pk)
+        inst.integrate_data_for_hydration(rearranged)
         assert inst.id == 1
         assert inst.book is None
 
@@ -1629,7 +1629,7 @@ class TestPolymorphicRefAndJoinCoverage:
 class TestPolymorphicListRefHydration:
     """List ref with secondary_type Table: JSON ids/tables (772, 776-779)."""
 
-    def test_instance_from_row_polymorphic_list_ref(self, setup_db):
+    def test_hydration_polymorphic_list_ref(self, setup_db):
         class B(Table, with_timestamps=True):
             x: int = 0
 
@@ -1642,13 +1642,14 @@ class TestPolymorphicListRefHydration:
         b2 = B(x=20)
         a = A(items=[b1, b2])
         assert a.id == 1
-        tbl = A._get_table_name()
         row_dict = {
-            f"{tbl}{ALIAS_SEPARATOR}id": 1,
-            f"{tbl}{ALIAS_SEPARATOR}items": '[{"table": "b", "id": 1}, {"table": "b", "id": 2}]',
+            "id": 1,
+            "items": '[{"table": "b", "id": 1}, {"table": "b", "id": 2}]',
         }
-        q = Query(table=A).select(A.pk, A.items)
-        inst = q.instance_from_row(row_dict)
+        rearranged = A.rearrange_data_for_hydration([row_dict])
+        root_pk = list(rearranged.keys())[0]
+        inst = A.make_empty_instance(root_pk)
+        inst.integrate_data_for_hydration(rearranged)
         assert inst.id == 1
         assert len(inst.items) == 2
         assert inst.items[0].id == 1
@@ -1744,8 +1745,8 @@ class TestQueryCoverageHelpers:
         assert a2.name == "x"
         assert a2.value == 2
 
-    def test_instance_from_row_list_ref_with_no_ids_key_uses_empty_list(self, setup_db):
-        """When row has no name_ids key, list ref gets references_ids=None then [] (line 769)."""
+    def test_hydration_list_ref_with_no_ids_uses_empty_list(self, setup_db):
+        """When row has no kids key, list ref lazy-loads as empty list."""
         class Child(Table, with_timestamps=True):
             x: int = 0
 
@@ -1756,10 +1757,11 @@ class TestQueryCoverageHelpers:
         Query(table=Child).ensure_table_structure()
         p = Parent()
         assert p.id == 1
-        tbl = Parent._get_table_name()
-        row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1}
-        q = Query(table=Parent).select(Parent.pk)
-        inst = q.instance_from_row(row_dict)
+        row_dict = {"id": 1}
+        rearranged = Parent.rearrange_data_for_hydration([row_dict])
+        root_pk = list(rearranged.keys())[0]
+        inst = Parent.make_empty_instance(root_pk)
+        inst.integrate_data_for_hydration(rearranged)
         assert inst.id == 1
         assert inst.kids == []
 
@@ -1902,8 +1904,8 @@ class TestQueryCoverageHelpers:
         d2 = Doc(name=None, content="second")
         assert d2.id != d.id
 
-    def test_instance_from_data_unexpected_reference_type_raises(self, setup_db):
-        """_instance_from_data raises when ref has secondary_type but base_type not list/tuple/set (line 640)."""
+    def test_integrate_data_unexpected_reference_type_raises(self, setup_db):
+        """integrate_data_for_hydration raises when ref has secondary_type but base_type not list/tuple/set."""
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -1915,20 +1917,22 @@ class TestQueryCoverageHelpers:
 
         Query(table=A).ensure_table_structure()
         Query(table=B).ensure_table_structure()
-        tbl = A._get_table_name()
-        row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1}
+        row_dict = {"id": 1, "ref": 42}
         fake_ref = SimpleNamespace(
             name="ref",
             is_reference=True,
             secondary_type=B,
             base_type=dict,
             reference_type=B,
+            is_collection=False,
         )
         patched_fields = {**A._get_columns(), "ref": fake_ref}
         with patch.object(A, "_get_columns", return_value=patched_fields):
-            q = Query(table=A)
+            rearranged = A.rearrange_data_for_hydration([row_dict])
+            root_pk = list(rearranged.keys())[0]
+            instance = A.make_empty_instance(root_pk)
             with pytest.raises(ValueError, match="Unexpected reference type"):
-                q.instance_from_row(row_dict)
+                instance.integrate_data_for_hydration(rearranged)
 
 
 class TestQueryUpdateEmptySetData:

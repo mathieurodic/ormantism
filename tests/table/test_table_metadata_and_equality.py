@@ -183,8 +183,8 @@ class TestTableLazyReadonly:
 
         a = A(name="x")
         assert a.id is not None
-        # After update, _mark_readonly_lazy can leave created_at as lazy (not in __dict__)
-        a._mark_readonly_lazy()
+        # Simulate created_at not in __dict__ (e.g. after lazy invalidation)
+        a.__dict__.pop("created_at", None)
         assert "created_at" not in a.__dict__
         created = getattr(a, "created_at")
         assert created is not None

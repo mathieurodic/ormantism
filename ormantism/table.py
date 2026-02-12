@@ -1,6 +1,5 @@
 """Table model base for ORM CRUD and schema creation."""
 
-import inspect
 import json
 import warnings
 from collections import defaultdict
@@ -11,37 +10,8 @@ from pydantic import BaseModel
 
 from .utils.make_hashable import make_hashable
 from .expressions import ALIAS_SEPARATOR
-from .utils.get_table_by_name import get_table_by_name
 from .column import Column
 from .table_meta import TableMeta
-
-
-def _is_raw_ref(val: Any) -> bool:
-    """True if value is a raw ref (int, dict with table/id, or list of those) not yet loaded."""
-    if val is None:
-        return False
-    if isinstance(val, int):
-        return True
-    if isinstance(val, dict) and "table" in val and "id" in val:
-        return True
-    if isinstance(val, list):
-        if not val:
-            return True
-        return isinstance(val[0], int) or (
-            isinstance(val[0], dict) and "table" in val[0] and "id" in val[0]
-        )
-    return False
-
-
-def _run_lazy_load(loader_info: tuple) -> Any:
-    """Load a reference from (model, id) or (models, ids); emits N+1 warning."""
-    model, identifier = loader_info
-    if inspect.isclass(model) and issubclass(model, Table):
-        return None if identifier is None else model.load(id=identifier)
-    return [
-        reference_type.load(id=reference_id)
-        for reference_type, reference_id in zip(model, identifier)
-    ]
 
 
 from .table_mixins import (
@@ -76,50 +46,19 @@ class Table(metaclass=TableMeta):
 
     def _load(self, names: tuple[str, ...]):
         """Load a value from the database for a given column name, using the current instance's identifier."""
-        row = self.q().select(*names).where(id=self.id).rows(as_dicts=True)[0]
+        rows = self.q().select(*names).where(id=self.id).rows(as_dicts=True)
+        if not rows:
+            return
+        row = dict(rows[0])
+        if "id" not in row:
+            row["id"] = self.id
         self._load_row(row)
     
     def _load_row(self, row: dict[str, Any]):
-        groupped_values = defaultdict(dict)
-        for name, value in row.items():
-            if ALIAS_SEPARATOR in name:
-                table_path, column_name = name.rsplit(ALIAS_SEPARATOR, 1)
-            else:
-                table_path, column_name = "", name
-            groupped_values[table_path][column_name] = value
-
-        processed_table_paths = set()
-        data = {}
-        def process(table_path: str, values: dict[str, Any]):
-            if table_path in processed_table_paths:
-                return
-            processed_table_paths.add(table_path)
-            table = self._expression.resolve(table_path).table
-            for name, value in values.items():
-                data[name] = table._get_column(name).parse(value)
-
-        for name, value in groupped_values.pop("").items():
-            data[name] = self._get_column(name).parse(value)
-
-        for table_path in sorted(groupped_values.keys()):
-            if not table_path:
-                parsed_values = {}
-                for name in groupped_values.get("", {}).keys():
-                    try:
-                        column = self._get_column(name)
-                    except KeyError:
-                        continue
-                    value = groupped_values[""][name]
-                    parsed_values[name] = column.parse(value)
-                self.__dict__.update(parsed_values)
-            else:
-                table = get_table_by_name(table_path)
-                joined_id = groupped_values[table_path].get("id")
-                table_instance = table.load(id=joined_id)
-                self.__dict__.update(table_instance.__dict__)
+        self.hydrate_with([row])
 
     def __getattribute__(self, name: str) -> Any:
-        """Lazy-load refs and read-only scalars on first access; derive from schema + __dict__."""
+        """Lazy-load columns on first access; derive from schema + __dict__."""
         d = object.__getattribute__(self, "__dict__")
         cls = type(self)
         try:
@@ -129,62 +68,11 @@ class Table(metaclass=TableMeta):
                 return d[name]
             return object.__getattribute__(self, name)
 
-        val = d.get(name)
-        if name in d and not (column.is_reference and _is_raw_ref(val)):
-            return val
+        if name in d:
+            return d[name]
 
-        if column.is_reference:
-            raw = d.get(name)
-            if raw is None:
-                return object.__getattribute__(self, name)
-            # Scalar: int or {"table": "...", "id": N}
-            if isinstance(raw, int):
-                loader_info = (column.reference_type, raw)
-            elif isinstance(raw, dict) and "table" in raw and "id" in raw:
-                reference_type = get_table_by_name(raw["table"]) if raw["table"] else None
-                loader_info = (reference_type, raw["id"])
-            # List: [id1, id2] or [{"table": "...", "id": N}, ...]
-            elif isinstance(raw, list):
-                if raw and isinstance(raw[0], dict):
-                    references_types = [
-                        get_table_by_name(item["table"]) if item.get("table") else None
-                        for item in raw
-                    ]
-                    references_ids = [item["id"] for item in raw]
-                else:
-                    references_types = [column.reference_type] * len(raw)
-                    references_ids = raw or []
-                loader_info = (references_types, references_ids)
-            else:
-                return object.__getattribute__(self, name)
-
-            warnings.warn(
-                f"Lazy loading '{name}' on {cls.__name__}: consider preloading "
-                "(e.g. select or load with this path) to avoid N+1 queries.",
-                UserWarning,
-                stacklevel=2,
-            )
-            value = _run_lazy_load(loader_info)
-            d[name] = value
-            return value
-
-        if name in getattr(cls, "_READ_ONLY_COLUMNS", ()) and name != "id":
-            pk = d.get("id")
-            assert pk is not None, "id should always be present on table instance"
-            from .query import Query
-            tbl = cls._get_table_name()
-            col = column.name
-            rows = Query(table=cls).execute(
-                f"SELECT {col} FROM {tbl} WHERE id = ?",
-                (pk,),
-                ensure_structure=False,
-            )
-            raw = rows[0][0] if rows else None
-            value = column.parse(raw)
-            d[name] = value
-            return value
-
-        return object.__getattribute__(self, name)
+        self._load((name,))
+        return d.get(name)
 
     def __getattr__(self, name: str) -> Any:
         """Raise for unknown attributes (lazy columns are handled in __getattribute__)."""
@@ -204,7 +92,7 @@ class Table(metaclass=TableMeta):
         """Apply changes to database."""
         self.check_read_only(new_data)
         self.q().where(id=self.id).update(**new_data)
-        self._mark_readonly_lazy()
+        self.__dict__.pop("updated_at", None)
 
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
@@ -306,6 +194,12 @@ class Table(metaclass=TableMeta):
         deep_defaultdict = lambda: defaultdict(deep_defaultdict)
         rearranged_data = deep_defaultdict()
         for unparsed_row in unparsed_data:
+            # Strip redundant FK columns when the reference is already joined
+            keys = set(unparsed_row.keys())
+            unparsed_row = {
+                k: v for k, v in unparsed_row.items()
+                if f"{k}{ALIAS_SEPARATOR}id" not in keys
+            }
             data_per_table = deep_defaultdict()
             for alias, value in unparsed_row.items():
                 if ALIAS_SEPARATOR in alias:
@@ -379,24 +273,25 @@ class Table(metaclass=TableMeta):
         for key, value in values.items():
             column = table._get_column(key)
             if column.is_reference:
-                # Collection of references
-                if column.is_collection:
-                    nested_table = column.reference_type
-                    nested_instances = []
-                    for nested_key, nested_value in value.items():
-                        nested_instance = nested_table.make_empty_instance(nested_key)
-                        # recursively integrate the nested instance; expect {pk: {cols...}}
-                        nested_instance.integrate_data_for_hydration({nested_key: nested_value})
-                        nested_instances.append(nested_instance)
-                    value = nested_instances
-                # Single reference
+                if column.secondary_type is not None and column.base_type not in (list, tuple, set):
+                    raise ValueError("Unexpected reference type in integrate_data_for_hydration")
+                if not isinstance(value, (dict, defaultdict)):
+                    value = column.parse(value)
                 else:
-                    nested_table = column.reference_type
-                    nested_key, nested_value = next(iter(value.items()))
-                    nested_instance = nested_table.make_empty_instance(nested_key)
-                    # recursively integrate the nested instance
-                    nested_instance.integrate_data_for_hydration(value)
-                    value = nested_instance
+                    if column.is_collection:
+                        nested_table = column.reference_type
+                        nested_instances = []
+                        for nested_key, nested_value in value.items():
+                            nested_instance = nested_table.make_empty_instance(nested_key)
+                            nested_instance.integrate_data_for_hydration({nested_key: nested_value})
+                            nested_instances.append(nested_instance)
+                        value = nested_instances
+                    else:
+                        nested_table = column.reference_type
+                        nested_key, nested_value = next(iter(value.items()))
+                        nested_instance = nested_table.make_empty_instance(nested_key)
+                        nested_instance.integrate_data_for_hydration(value)
+                        value = nested_instance
             else:
                 value = column.parse(value)
             self.__dict__[key] = value
@@ -524,17 +419,6 @@ class Table(metaclass=TableMeta):
             cls.__setattr__ = cls.__setattr_backup__
             delattr(cls, "__init_backup__")
             delattr(cls, "__setattr_backup__")
-
-    def _mark_readonly_lazy(self) -> None:
-        """Mark read-only columns (except id) as lazy; values will fetch on first access."""
-        cls = self.__class__
-        lazy_names = {
-            n for n in getattr(cls, "_READ_ONLY_COLUMNS", ())
-            if n != "id" and n in cls._get_columns()
-        }
-        for name in lazy_names:
-            self.__dict__.pop(name, None)
-
 
 # Re-export so existing imports from ormantism.table still work
 __all__ = [

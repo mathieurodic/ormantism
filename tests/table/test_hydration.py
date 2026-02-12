@@ -169,7 +169,7 @@ class TestIntegrateDataForHydration:
         instance = Author.make_empty_instance(1)
         instance.integrate_data_for_hydration({})
         assert instance.id == 1
-        assert not hasattr(instance, "name") or instance.name == ""
+        assert "name" not in instance.__dict__
 
     def test_root_only_scalar_columns(self, setup_db):
         """Integrate scalar columns only (no refs)."""
