@@ -20,16 +20,11 @@ class TestTableMetadata:
             value: int = 42
 
         fields = TestTable._get_fields()
-        non_default_fields = TestTable._get_non_default_fields()
 
         assert 'name' in fields
         assert 'value' in fields
         assert 'id' in fields
         assert 'created_at' in fields
-        assert 'name' in non_default_fields
-        assert 'value' in non_default_fields
-        assert 'id' not in non_default_fields
-        assert 'created_at' not in non_default_fields
 
     def test_get_field_by_column_name(self, setup_db):
         class B(Table, with_timestamps=True):
@@ -48,6 +43,15 @@ class TestTableMetadata:
 
         with pytest.raises(KeyError, match="No such field"):
             A._get_field("nonexistent")
+
+    def test_has_field(self, setup_db):
+        """_has_field returns True for existing field, False for missing (line 211)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        assert A._has_field("name") is True
+        assert A._has_field("id") is True
+        assert A._has_field("nonexistent") is False
 
     def test_check_read_only_raises(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -167,3 +171,21 @@ class TestTableEqualityAndCopy:
         a = A(name="x")
         c = copy.deepcopy(a)
         assert c is a
+
+
+class TestTableLazyReadonly:
+    """Table __getattr__ for lazy read-only scalars."""
+
+    def test_getattr_lazy_readonly_fetches_and_caches(self, setup_db):
+        """__getattr__ for lazy readonly fetches from DB and caches (created_at path)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        assert a.id is not None
+        # After update, _mark_readonly_lazy can leave created_at as lazy
+        a._mark_readonly_lazy()
+        assert "created_at" in a._lazy_readonly
+        created = getattr(a, "created_at")
+        assert created is not None
+        assert "created_at" not in a._lazy_readonly

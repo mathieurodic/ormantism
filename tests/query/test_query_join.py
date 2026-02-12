@@ -102,6 +102,40 @@ def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
     assert len(ref_types) == 2
     assert ref_types[0] is Child and ref_types[1] is Child
     assert ref_ids == [c1.id, c2.id]
-    # Access kids triggers one lazy load (loads the list)
-    _ = loaded.kids
+    # Access kids and use it triggers one lazy load (loads the list)
+    assert len(loaded.kids) == 2
     expect_lazy_loads.expect(1)
+
+
+def test_lazy_list_ref_proxy_contains_bool_reversed(setup_db):
+    """Lazy list ref: __contains__, __bool__, __reversed__ work on loaded list."""
+    class Child(Table, with_timestamps=True):
+        x: int = 0
+
+    class Parent(Table, with_timestamps=True):
+        kids: list[Child] = []
+
+    c1 = Child(x=1)
+    c2 = Child(x=2)
+    parent = Parent(kids=[c1, c2])
+    loaded = Parent.load(id=parent.id)
+    kids = loaded.kids  # proxy before first use
+    first = kids[0]  # triggers load
+    assert first in kids  # __contains__
+    assert bool(kids)  # __bool__
+    assert list(reversed(kids))[0].x == 2  # __reversed__
+
+
+def test_lazy_ref_proxy_private_attr_raises(setup_db):
+    """Accessing _private on a lazy ref loads it first; nonexistent _private raises AttributeError."""
+    class B(Table, with_timestamps=True):
+        title: str = ""
+
+    class A(Table, with_timestamps=True):
+        book: B | None = None
+
+    b = B(title="x")
+    a = A(book=b)
+    loaded = A.load(id=a.id)  # no preload, so book is lazy
+    with pytest.raises(AttributeError, match="_"):
+        _ = loaded.book._private_attr  # loads book, then raises for nonexistent _private_attr

@@ -701,7 +701,6 @@ class Query(BaseModel):
                 else:
                     data[name] = field.parse(data.get(name))
 
-        model._ensure_lazy_loaders()        # Ensure property accessors for lazy refs
         model._suspend_validation()         # Avoid validation until instance built
 
         instance = model(**data)            # Hydrate a Table instance
@@ -709,12 +708,9 @@ class Query(BaseModel):
         instance._lazy_joins = _lazy_joins  # Save what still needs to be lazy-loaded
         instance._lazy_readonly = _lazy_readonly
 
-        # Remove placeholders for unresolved refs so property can fetch on access
+        # Remove lazy refs from __dict__ so __getattribute__ will intercept on first access
         for name in _lazy_joins:
-            if name in instance.__dict__:
-                val = instance.__dict__[name]
-                if val is None or val == []:
-                    del instance.__dict__[name]
+            instance.__dict__.pop(name, None)
 
         for name in _lazy_readonly:
             instance.__dict__.pop(name, None)
@@ -725,7 +721,6 @@ class Query(BaseModel):
 
     def __iter__(self) -> Iterable[Table]:
         """Execute the query and yield each row as a Table instance (self.table)."""
-        self.table._ensure_lazy_loaders()
         rows = self.execute(self.sql, self.values, rows_as_dicts=True)
         for row_dict in rows:
             yield self.instance_from_row(row_dict)
@@ -812,6 +807,38 @@ class Query(BaseModel):
             return row
         return None
 
+    def count(self) -> int:
+        """Return the number of rows matching this query.
+
+        Ignores limit/offset. Uses COUNT(DISTINCT id) when JOINs are involved
+        so joined rows are not double-counted.
+        """
+        extra_paths = set()
+        for e in self.where_expressions:
+            extra_paths.update(collect_join_paths_from_expression(e))
+        tbl = self.table._get_table_name()
+        where_clause = self.sql_where
+        table_expressions = _collect_table_expressions(self, extra_paths)
+        from_join = _sql_from_join(table_expressions)
+        sql = f"SELECT COUNT(DISTINCT {tbl}.id)\n{from_join}{where_clause}"
+        rows = self.execute(sql, self.values)
+        return int(rows[0][0])
+
+    def exists(self) -> bool:
+        """Return True if at least one row matches this query, False otherwise.
+
+        Uses SELECT 1 ... LIMIT 1 for efficiency; does not fetch full rows.
+        """
+        extra_paths = set()
+        for e in self.where_expressions:
+            extra_paths.update(collect_join_paths_from_expression(e))
+        where_clause = self.sql_where
+        table_expressions = _collect_table_expressions(self, extra_paths)
+        from_join = _sql_from_join(table_expressions)
+        sql = f"SELECT 1\n{from_join}{where_clause}\nLIMIT 1"
+        rows = self.execute(sql, self.values)
+        return len(rows) > 0
+
     def upsert(
         self,
         on_conflict: list[str],
@@ -870,7 +897,7 @@ class Query(BaseModel):
             finally:
                 cls._resume_validation()
 
-        if instance.id is not None and instance.id >= 0:
+        if getattr(instance, "id", None) is not None and instance.id >= 0:
             return instance
 
         instance.check_read_only(init_data)

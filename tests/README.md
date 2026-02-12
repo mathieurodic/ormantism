@@ -108,11 +108,11 @@ Tests for `ormantism.query`: Query API, SQL building, and instance hydration.
 
 ### query/test_query.py
 
-Tests for the main query API: `Query`, `Query.ensure_table_structure`, select/where/order/limit, update/delete, `instance_from_row`, versioning, polymorphic refs, and coverage-oriented helpers.
+Tests for the main query API: `Query`, `Query.ensure_table_structure`, select/where/order/limit, update/delete, `instance_from_row`, versioning, polymorphic refs, `insert` (instance=None, versioned with null), and coverage-oriented helpers.
 
 ### query/test_query_join.py
 
-Tests for Query JOIN building: join tree construction, SQL FROM/JOIN clauses, column aliases, and list-reference lazy paths.
+Tests for Query JOIN building: join tree construction, SQL FROM/JOIN clauses, column aliases, list-reference lazy paths, and lazy loading behaviour (via `__getattribute__`).
 
 ---
 
@@ -130,7 +130,7 @@ Tests for Table CRUD, timestamps, relationships, lazy loading, and versioning: b
 
 ### table/test_table_lifecycle.py
 
-Tests for Table lifecycle hooks and `load_or_create`: `on_after_create`, `on_before_update`, and `load_or_create` (search fields, updates, reference handling).
+Tests for Table lifecycle hooks, `load_or_create`, and `load_all`: `on_after_create`, `on_before_update`, `load_or_create` (search fields, updates, reference handling, empty on_conflict path), and `load_all` deprecated API.
 
 ### table/test_table_mixins.py
 
@@ -138,7 +138,7 @@ Tests for `ormantism.table_mixins`: `_WithTimestamps._transform_query`, `_WithVe
 
 ### table/test_table_metadata_and_equality.py
 
-Tests for Table metadata and equality: `_get_fields`, `_get_table_name`, `_get_field`, options inheritance (e.g. versioning_along), `__eq__`, `__hash__`, and `__deepcopy__`.
+Tests for Table metadata and equality: `_get_fields`, `_get_table_name`, `_get_field`, options inheritance (e.g. versioning_along), `__eq__`, `__hash__`, `__deepcopy__`, and lazy read-only `__getattr__`.
 
 ### table/test_table_schema_and_delete.py
 

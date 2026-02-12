@@ -377,6 +377,31 @@ class TestQueryWhereExpressionStyleNested:
         rows = list(q)
         assert rows == []
 
+    def test_where_unknown_lookup_raises(self, setup_db):
+        """where() with unknown lookup raises ValueError (line 404)."""
+        from ormantism import query as query_module
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="x")
+        # Use a custom dict so .get("nonexistent") returns None for an unknown lookup
+        class MapWithHole(dict):
+            def get(self, key, default=None):
+                if key == "nonexistent":
+                    return None
+                return super().get(key, default)
+
+        orig = query_module._WHERE_LOOKUP_MAP.copy()
+        hole_map = MapWithHole(orig)
+        hole_map["nonexistent"] = "fake"  # in map so parts[-1] in map -> path_str="name"
+        try:
+            query_module._WHERE_LOOKUP_MAP = hole_map
+            with pytest.raises(ValueError, match="Unknown lookup"):
+                A.q().where(name__nonexistent="x")
+        finally:
+            query_module._WHERE_LOOKUP_MAP = orig
+
 
 class TestQueryOrderAndLimit:
     """Test order_by and limit."""
@@ -487,7 +512,7 @@ class TestQueryIncludeDeleted:
 
 
 class TestQueryAllGetFirst:
-    """Test all(), get(), first()."""
+    """Test all(), get(), first(), count(), exists()."""
 
     def test_all(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -568,6 +593,67 @@ class TestQueryAllGetFirst:
         row = q.get_one()
         assert row is not None
         assert row.id == a.id
+
+    def test_count(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="a")
+        A(name="b")
+        A(name="c")
+        assert Query(table=A).count() == 3
+
+    def test_count_with_where(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="x")
+        A(name="y")
+        A(name="x")
+        assert Query(table=A).where(name="x").count() == 2
+        assert Query(table=A).where(name="y").count() == 1
+        assert Query(table=A).where(name="z").count() == 0
+
+    def test_count_ignores_limit_offset(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        for _ in range(5):
+            A(name="x")
+        q = Query(table=A).limit(2).offset(1)
+        assert q.count() == 5
+
+    def test_count_with_join(self, setup_db):
+        """count() with joined where uses COUNT(DISTINCT) to avoid double-counting."""
+        class Book(Table, with_timestamps=True):
+            title: str = ""
+
+        class User(Table, with_timestamps=True):
+            name: str = ""
+            book: Book | None = None
+
+        b1 = Book(title="Python")
+        b2 = Book(title="Ruby")
+        User(name="a", book=b1)
+        User(name="b", book=b2)
+        User(name="c", book=b1)
+        assert Query(table=User).where(User.book.title.icontains("Py")).count() == 2
+        assert Query(table=User).where(User.book.title.icontains("Ruby")).count() == 1
+
+    def test_exists(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="x")
+        assert Query(table=A).exists() is True
+        assert Query(table=A).where(name="x").exists() is True
+        assert Query(table=A).where(name="missing").exists() is False
+
+    def test_exists_empty_table(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        assert Query(table=A).exists() is False
 
 
 class TestQueryUpdate:
@@ -726,6 +812,15 @@ class TestResolveUserPathAndSelectString:
         q = Query(table=Post)
         with pytest.raises(ValueError, match="root table Author but query is for Post"):
             q.resolve(Author.name)
+
+    def test_resolve_wrong_type_raises(self, setup_db):
+        """resolve() with non-str/ColumnExpression/TableExpression raises TypeError (line 355)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        q = Query(table=A)
+        with pytest.raises(TypeError, match="resolve requires"):
+            q.resolve(123)
 
     def test_where_raises_for_wrong_root_expression(self, setup_db):
         """where(Author.name == 'x') raises when query is for Post."""
@@ -1716,6 +1811,14 @@ class TestQueryCoverageHelpers:
         with pytest.raises(ValueError, match="Cannot select another table"):
             Query(table=A).select(B)
 
+    def test_select_wrong_type_raises(self, setup_db):
+        """Query.select with wrong type raises TypeError (line 425)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        with pytest.raises(TypeError, match="select requires"):
+            Query(table=A).select(42)
+
     def test_order_by_wrong_type_raises(self, setup_db):
         """Query.order_by with wrong type raises TypeError (line 419)."""
         class A(Table, with_timestamps=True):
@@ -1732,6 +1835,16 @@ class TestQueryCoverageHelpers:
         with pytest.raises(AttributeError, match="read-only attribute"):
             A.q().upsert(on_conflict=["name"], name="x", id=999)
 
+    def test_insert_instance_none_creates_empty_and_inserts(self, setup_db):
+        """Query.insert(instance=None) creates empty instance and inserts DEFAULT VALUES (lines 872-876)."""
+        class IdOnly(Table, with_timestamps=False):
+            pass
+
+        Query(table=IdOnly).ensure_table_structure()
+        row = Query(table=IdOnly).insert(instance=None, init_data={})
+        assert row is not None
+        assert row.id is not None
+
     def test_insert_empty_instance_uses_default_values_sql(self, setup_db):
         """Query.insert with empty instance and init_data uses DEFAULT VALUES (line 869)."""
         class IdOnly(Table, with_timestamps=False):
@@ -1742,6 +1855,19 @@ class TestQueryCoverageHelpers:
         inst.__dict__["id"] = None
         row = Query(table=IdOnly).insert(instance=inst, init_data={})
         assert row.id is not None
+
+    def test_versioned_insert_with_null_versioning_along_value(self, setup_db):
+        """Versioned insert when versioning_along field value is None (line 925 branch)."""
+        class Doc(Table, versioning_along=("name",)):
+            name: str | None = None
+            content: str = ""
+
+        Query(table=Doc).ensure_table_structure()
+        # Insert with name=None to hit the "value is None" branch in versioning loop
+        d = Doc(name=None, content="first")
+        assert d.id is not None
+        d2 = Doc(name=None, content="second")
+        assert d2.id != d.id
 
     def test_instance_from_data_unexpected_reference_type_raises(self, setup_db):
         """_instance_from_data raises when ref has secondary_type but base_type not list/tuple/set (line 640)."""

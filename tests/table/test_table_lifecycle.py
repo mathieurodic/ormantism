@@ -1,4 +1,4 @@
-"""Tests for Table lifecycle: on_after_create, on_before_update, and load_or_create."""
+"""Tests for Table lifecycle: on_after_create, on_before_update, load_or_create, and load_all."""
 
 import pytest
 from ormantism.table import Table
@@ -145,6 +145,19 @@ class TestLoadOrCreate:
         assert c2.id == c.id
         assert c2.link is not None and c2.link.id == b2.id
 
+    def test_load_or_create_returns_new_instance_when_on_conflict_empty(self, setup_db):
+        """load_or_create when no keys in on_conflict returns cls(**data) without upsert (line 202)."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+            tag: str = ""
+
+        a = A.load_or_create(_search_fields=("name",), name="x", tag="t1")
+        assert a.id is not None
+        # Second call with same name but different _search_fields that yields empty on_conflict
+        a2 = A.load_or_create(_search_fields=("id",), name="y", tag="t2")
+        assert a2.id != a.id
+        assert a2.name == "y"
+
     def test_load_or_create_polymorphic_ref_tuple_updates(self, setup_db):
         """load_or_create when _lazy_joins[name] is (class, id) and value differs (lines 95-96)."""
         class B1(Table, with_timestamps=True):
@@ -169,3 +182,29 @@ class TestLoadOrCreate:
         p2 = Poly.load_or_create(_search_fields=("key",), key="k", ref=b1_other)
         assert p2.id == p.id
         assert p2.ref is not None and p2.ref.id == b1_other.id
+
+
+class TestLoadAll:
+    """Test load_all() deprecated API (line 363-368)."""
+
+    def test_load_all_returns_list(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="a1")
+        A(name="a2")
+        with pytest.deprecated_call():
+            rows = A.load_all()
+        assert isinstance(rows, list)
+        assert len(rows) >= 2
+
+    def test_load_all_with_criteria(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="x")
+        A(name="y")
+        with pytest.deprecated_call():
+            rows = A.load_all(name="x")
+        assert len(rows) == 1
+        assert rows[0].name == "x"

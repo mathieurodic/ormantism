@@ -6,7 +6,7 @@ from ormantism.transaction import _transaction_managers
 
 
 def _is_lazy_load_warning(record):
-    """Match the lazy-load warning emitted by Table._add_lazy_loader."""
+    """Match the lazy-load warning emitted by Table.__getattribute__ for lazy refs."""
     return "Lazy loading" in str(record.message)
 
 

@@ -2,7 +2,7 @@
 
 import inspect
 import warnings
-from typing import ClassVar
+from typing import ClassVar, Any
 from functools import cache
 
 from pydantic import BaseModel
@@ -10,6 +10,19 @@ from pydantic import BaseModel
 from .utils.make_hashable import make_hashable
 from .column import Column
 from .table_meta import TableMeta
+
+
+def _run_lazy_load(loader_info: tuple) -> Any:
+    """Load a reference from (model, id) or (models, ids); emits N+1 warning."""
+    model, identifier = loader_info
+    if inspect.isclass(model) and issubclass(model, Table):
+        return None if identifier is None else model.load(id=identifier)
+    return [
+        reference_type.load(id=reference_id)
+        for reference_type, reference_id in zip(model, identifier)
+    ]
+
+
 from .table_mixins import (
     _WithPrimaryKey,
     _WithSoftDelete,
@@ -37,10 +50,65 @@ class Table(metaclass=TableMeta):
 
     def __hash__(self):
         """Hash for equality and use in sets/dicts."""
-        # Ensure lazy read-only fields are loaded so hash is consistent
-        for name in getattr(self, "_lazy_readonly", set()):
+        # Ensure lazy fields are loaded so hash is consistent
+        lazy_readonly = getattr(self, "_lazy_readonly", set())
+        lazy_joins = getattr(self, "_lazy_joins", {})
+        for name in list(lazy_readonly | lazy_joins.keys()):
             getattr(self, name)
         return hash(make_hashable(self))
+
+    def __getattribute__(self, name: str) -> Any:
+        """Lazy-load refs and read-only scalars on first access; then cache and return."""
+        # Use object.__getattribute__ for internal attrs to avoid recursion
+        try:
+            lazy_joins = object.__getattribute__(self, "_lazy_joins")
+        except AttributeError:
+            lazy_joins = {}
+        try:
+            lazy_readonly = object.__getattribute__(self, "_lazy_readonly")
+        except AttributeError:
+            lazy_readonly = set()
+
+        if name in lazy_joins:
+            loader_info = lazy_joins[name]
+            cls_name = type(self).__name__
+            warnings.warn(
+                f"Lazy loading '{name}' on {cls_name}: consider preloading "
+                "(e.g. select or load with this path) to avoid N+1 queries.",
+                UserWarning,
+                stacklevel=2,
+            )
+            value = _run_lazy_load(loader_info)
+            d = object.__getattribute__(self, "__dict__")
+            d[name] = value
+            del lazy_joins[name]
+            return value
+
+        if name in lazy_readonly:
+            cls = type(self)
+            pk = object.__getattribute__(self, "id")
+            assert pk is not None, "id should always be present on table instance"
+            from .query import Query
+            field = cls._get_field(name)
+            tbl = cls._get_table_name()
+            col = field.column_name
+            rows = Query(table=cls).execute(
+                f"SELECT {col} FROM {tbl} WHERE id = ?",
+                (pk,),
+                ensure_structure=False,
+            )
+            raw = rows[0][0] if rows else None
+            value = field.parse(raw)
+            d = object.__getattribute__(self, "__dict__")
+            d[name] = value
+            lazy_readonly.discard(name)
+            return value
+
+        return object.__getattribute__(self, name)
+
+    def __getattr__(self, name: str) -> Any:
+        """Raise for unknown attributes (lazy fields are handled in __getattribute__)."""
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}") from None
 
     def __deepcopy__(self, memo):
         """Return self; table instances are treated as immutable for copy purposes."""
@@ -93,16 +161,6 @@ class Table(metaclass=TableMeta):
         if name.endswith("_table") and name[:-6] in columns:
             return columns[name[:-6]]
         raise KeyError(f"No such field for {cls.__name__}: {name}")
-
-    @classmethod
-    @cache
-    def _get_non_default_fields(cls):
-        """Return fields that are not read-only (e.g. not id, created_at from mixins)."""
-        return {
-            name: field
-            for name, field in cls._get_fields().items()
-            if name not in cls._READ_ONLY_FIELDS
-        }
 
     @classmethod
     def _get_table_sql_creations(cls) -> list[str]:
@@ -275,79 +333,9 @@ class Table(metaclass=TableMeta):
             delattr(cls, "__init_backup__")
             delattr(cls, "__setattr_backup__")
 
-    @classmethod
-    def _add_lazy_loader(cls, name: str):
-        """Attach a property on the class that loads the reference for `name` on first access."""
-        def lazy_loader(self):
-            if not name in self.__dict__:
-                warnings.warn(
-                    f"Lazy loading '{name}' on {cls.__name__}: consider preloading (e.g. select or load with this path) to avoid N+1 queries.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                model, identifier = self._lazy_joins[name]
-                if inspect.isclass(model) and issubclass(model, Table):
-                    value = None if identifier is None else model.load(id=identifier)
-                else:
-                    value = [reference_type.load(id=reference_id)
-                             for reference_type, reference_id
-                             in zip(model, identifier)]
-                self.__dict__[name] = value
-            return self.__dict__[name]
-        setattr(cls, name, property(lazy_loader))
-
-    @classmethod
-    def _ensure_lazy_loaders(cls):
-        """Ensure every reference field has a lazy-loading property."""
-        if hasattr(cls, "_has_lazy_loaders"):
-            return
-        for name, field in cls._get_fields().items():
-            if field.is_reference:
-                cls._add_lazy_loader(name)
-        cls._ensure_lazy_readonly_loaders()
-        cls._has_lazy_loaders = True
-
-    @classmethod
-    def _add_lazy_readonly_loader(cls, name: str):
-        """Attach a property that fetches a read-only scalar field on first access."""
-        def lazy_loader(self):
-            if name not in self.__dict__:
-                pk = getattr(self, "id", None)
-                if pk is None:
-                    return None
-                from .query import Query
-                field = cls._get_field(name)
-                tbl = cls._get_table_name()
-                col = field.column_name
-                rows = Query(table=cls).execute(
-                    f"SELECT {col} FROM {tbl} WHERE id = ?",
-                    (pk,),
-                    ensure_structure=False,
-                )
-                value = rows[0][0] if rows else None
-                parsed = field.parse(value)
-                if parsed is None and field.default is not None:
-                    parsed = field.default
-                self.__dict__[name] = parsed
-            return self.__dict__[name]
-        setattr(cls, name, property(lazy_loader))
-
-    @classmethod
-    def _ensure_lazy_readonly_loaders(cls):
-        """Ensure every read-only scalar field (except id) has a lazy-loading property."""
-        if hasattr(cls, "_has_lazy_readonly_loaders"):
-            return
-        for name in getattr(cls, "_READ_ONLY_FIELDS", ()):
-            if name == "id":
-                continue
-            if name in cls._get_fields():
-                cls._add_lazy_readonly_loader(name)
-        cls._has_lazy_readonly_loaders = True
-
     def _mark_readonly_lazy(self) -> None:
         """Mark read-only fields (except id) as lazy; values will fetch on first access."""
         cls = self.__class__
-        cls._ensure_lazy_readonly_loaders()
         lazy_names = {
             n for n in getattr(cls, "_READ_ONLY_FIELDS", ())
             if n != "id" and n in cls._get_fields()

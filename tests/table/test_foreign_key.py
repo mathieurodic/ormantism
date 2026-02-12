@@ -28,7 +28,7 @@ def test_specific_foreign_key(setup_db, expect_lazy_loads):
         assert parent.parent.id == grandparent.id
         child = Node.load(name="child", preload=preload)
         assert child.parent.id == parent.id
-    # First iteration (no preload) triggers 2 lazy loads; second (preload) triggers 0
+    # First iteration (no preload) triggers 2 lazy loads (parent.parent, child.parent); second (preload) triggers 0.
     expect_lazy_loads.expect(2)
 
 
@@ -184,3 +184,40 @@ def test_generic_foreign_key_list():
     assert pointer.ref[2].id == reference1.id
     assert pointer.ref[2].__class__ == Reference1
     assert pointer.ref[2].foo == 42
+
+
+class TestLazyRefCoverage:
+    """Coverage for lazy ref loading via __getattribute__."""
+
+    def test_lazy_ref_private_attr_raises(self, setup_db):
+        """Accessing nonexistent _private on a lazy ref raises AttributeError."""
+        class B(Table, with_timestamps=True):
+            title: str = ""
+
+        class A(Table, with_timestamps=True):
+            book: B | None = None
+
+        b = B(title="x")
+        a = A(book=b)
+        loaded = A.q().select(A.pk).where(A.pk == a.id).first()
+        assert loaded is not None
+        with pytest.raises(AttributeError, match="_"):
+            _ = loaded.book._private_thing  # loads book, then raises for nonexistent _private_thing
+
+    def test_lazy_list_ref_contains_bool_reversed(self, setup_db):
+        """Lazy list ref: __contains__, __bool__, __reversed__ work on loaded list."""
+        class Child(Table, with_timestamps=True):
+            x: int = 0
+
+        class Parent(Table, with_timestamps=True):
+            kids: list[Child] = []
+
+        c1 = Child(x=1)
+        c2 = Child(x=2)
+        p = Parent(kids=[c1, c2])
+        loaded = Parent.q().select(Parent.pk).where(Parent.pk == p.id).first()
+        assert loaded is not None
+        assert c1 in loaded.kids
+        assert bool(loaded.kids) is True
+        assert list(reversed(loaded.kids)) == [c2, c1]
+
