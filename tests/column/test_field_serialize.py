@@ -5,9 +5,10 @@ from pydantic import BaseModel
 
 from ormantism.table import Table
 from ormantism.column import Column
+from ormantism import JSON
 
 
-def test_field_hash():
+def test_column_hash():
     class T(Table):
         name: str
 
@@ -78,3 +79,68 @@ def test_serialize_exception_propagates():
     f = Column.from_pydantic_info(C, "ref", info)
     with pytest.raises(AttributeError):
         f.serialize("not a B")
+
+
+def test_serialize_reference_scalar_none():
+    class B(Table):
+        value: int = 0
+
+    class C(Table):
+        ref: B | None = None
+
+    col = Column.from_pydantic_info(C, "ref", C.model_fields["ref"])
+    assert col.serialize(None) is None
+
+
+def test_serialize_reference_scalar(setup_db):
+    class B(Table, with_timestamps=True):
+        value: int = 0
+
+    class C(Table, with_timestamps=True):
+        ref: B | None = None
+
+    b = B()
+    col = Column.from_pydantic_info(C, "ref", C.model_fields["ref"])
+    assert col.serialize(b) == b.id
+
+
+def test_serialize_reference_list_empty():
+    class B(Table):
+        value: int = 0
+
+    class C(Table):
+        items: list[B] = []
+
+    col = Column.from_pydantic_info(C, "items", C.model_fields["items"])
+    assert col.serialize([]) == []
+
+
+def test_serialize_polymorphic_reference_scalar(setup_db):
+    class B(Table, with_timestamps=True):
+        value: int = 0
+
+    class Poly(Table, with_timestamps=True):
+        target: Table | None = None
+
+    b = B()
+    col = Column.from_pydantic_info(Poly, "target", Poly.model_fields["target"])
+    result = col.serialize(b)
+    assert result == {"table": B._get_table_name(), "id": b.id}
+
+
+def test_serialize_json():
+    class T(Table):
+        j: JSON
+
+    col = Column.from_pydantic_info(T, "j", T.model_fields["j"])
+    value = {"a": 1, "b": [2, 3]}
+    import json
+    assert json.loads(col.serialize(value)) == value
+
+
+def test_serialize_for_filtering_param():
+    class T(Table):
+        name: str
+
+    col = Column.from_pydantic_info(T, "name", T.model_fields["name"])
+    assert col.serialize("hello", for_filtering=True) == "hello"

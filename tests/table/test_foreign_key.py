@@ -52,7 +52,7 @@ def test_specific_foreign_key_preload_avoids_lazy(setup_db, expect_lazy_loads):
     expect_lazy_loads.expect(0)
 
 
-def test_generic_foreign_key():
+def test_generic_foreign_key(setup_db):
     
     class Ref1(Table):
         foo: int

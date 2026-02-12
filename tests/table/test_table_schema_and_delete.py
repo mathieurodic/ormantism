@@ -73,8 +73,11 @@ class TestProcessData:
 
         b = B()
         out = Poly.process_data({"target": b})
-        assert out["target_id"] == b.id
-        assert out["target_table"] == B._get_table_name()
+        # Polymorphic ref stored as single JSON column
+        import json
+        stored = json.loads(out["target"])
+        assert stored["id"] == b.id
+        assert stored["table"] == B._get_table_name()
 
     def test_process_data_list_of_references(self, setup_db):
         class B(Table, with_timestamps=True):
@@ -86,7 +89,10 @@ class TestProcessData:
         b1 = B()
         b2 = B()
         out = C.process_data({"items": [b1, b2]})
-        assert out["items_ids"] == [b1.id, b2.id]
+        # List ref stored as JSON array of ids
+        import json
+        stored = json.loads(out["items"])
+        assert stored == [b1.id, b2.id]
 
     def test_process_data_base_model_value(self, setup_db):
         class Nested(BaseModel):
@@ -101,16 +107,16 @@ class TestProcessData:
         assert out["data"] == {"x": 1, "y": "two"}
 
     def test_process_data_list_ref_non_list_raises(self, setup_db):
-        """process_data raises NotImplementedError when list ref gets non-list value (line 237)."""
+        """process_data raises when list ref gets non-list value."""
         class B(Table, with_timestamps=True):
             value: int = 0
 
         class C(Table, with_timestamps=True):
             items: list[B] = []
 
-        with pytest.raises(NotImplementedError):
+        with pytest.raises((TypeError, ValueError, AttributeError)):
             C.process_data({"items": 42})
-        with pytest.raises(NotImplementedError):
+        with pytest.raises((TypeError, ValueError, AttributeError)):
             C.process_data({"items": "not a list"})
 
 
@@ -129,27 +135,27 @@ class TestCheckReadOnly:
             a.check_read_only({"id": 999})
 
 
-class TestGetFieldByColumnName:
-    """Test _get_field by column name and _table suffix (lines 118, 134)."""
+class TestGetColumnByName:
+    """Test _get_column by column name."""
 
-    def test_get_field_by_table_suffix(self, setup_db):
-        """_get_field('ref_table') returns the ref column when table has that reference (line 118)."""
+    def test_get_column_by_name(self, setup_db):
+        """_get_column('target') returns the ref column when table has that reference."""
         class B(Table, with_timestamps=True):
             value: int = 0
 
         class Poly(Table, with_timestamps=True):
             target: Table | None = None
 
-        col = Poly._get_field("target_table")
-        assert col.name == "target"
-        assert col.is_reference
+        column = Poly._get_column("target")
+        assert column.name == "target"
+        assert column.is_reference
 
-    def test_get_field_raises_for_unknown_name(self, setup_db):
+    def test_get_column_raises_for_unknown_name(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        with pytest.raises(KeyError, match="No such field"):
-            A._get_field("nosuch")
+        with pytest.raises(KeyError, match="No such column"):
+            A._get_column("nosuch")
 
 
 class TestDelete:

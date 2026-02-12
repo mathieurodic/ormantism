@@ -22,10 +22,11 @@ from .expressions import (
     ALIAS_SEPARATOR,
     ArgumentedExpression,
     Expression,
-    NaryOperatorExpression,
-    UnaryOperatorExpression,
     FunctionExpression,
     LikeExpression,
+    NaryOperatorExpression,
+    OrderExpression,
+    UnaryOperatorExpression,
     TableExpression,
     ColumnExpression,
     OrderExpression,
@@ -62,6 +63,7 @@ from .table_mixins import (
     _WithUpdatedAtTimestamp,
 )
 from .utils.get_table_by_name import get_table_by_name
+from .utils.is_table import is_table
 
 logger = logging.getLogger("ormantism")
 
@@ -74,7 +76,7 @@ def create_table(model: type[Table], created: Optional[set[type[Table]]] = None)
     if created is None:
         created = set()
     created.add(model)
-    for field in model._get_fields().values():
+    for field in model._get_columns().values():
         if field.is_reference:
             for t in (field.base_type, field.secondary_type):
                 if inspect.isclass(t) and issubclass(t, Table) and t != Table and t not in created:
@@ -83,14 +85,14 @@ def create_table(model: type[Table], created: Optional[set[type[Table]]] = None)
     statements += sum(
         (
             list(field.sql_creations)
-            for field in model._get_fields().values()
+            for field in model._get_columns().values()
             if field.name not in ("created_at", "id")
         ),
         start=[],
     )
     statements += [
-        f"FOREIGN KEY ({name}_id) REFERENCES {field.base_type._get_table_name()}(id)"
-        for name, field in model._get_fields().items()
+        f"FOREIGN KEY ({name}) REFERENCES {field.base_type._get_table_name()}(id)"
+        for name, field in model._get_columns().items()
         if field.is_reference
         and field.secondary_type is None
         and field.base_type != Table
@@ -117,9 +119,9 @@ def add_columns(model: type[Table]) -> None:
     }
     new_fields = [
         field
-        for field in model._get_fields().values()
-        if field.column_name not in columns_names
-        and field.column_name not in mixin_column_names
+        for field in model._get_columns().values()
+        if field.name not in columns_names
+        and field.name not in mixin_column_names
     ]
     for field in new_fields:
         logger.info("ADD COLUMN %s.%s", field.table.__name__, field.name)
@@ -147,7 +149,7 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
 
     Raises ValueError for generic Table reference (same as before).
     """
-    root = query.table._root_expression()
+    root = query.table._expression
     seen_paths: set[str] = set()
     result: list[TableExpression] = [root]
 
@@ -167,7 +169,7 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
             # Validate: segment must be a reference and not generic Table
             parent = root.table if i == 1 else e.parent.table
             seg = parts[i - 1]
-            field = parent._get_field(seg)
+            field = parent._get_column(seg)
             if not field.is_reference:
                 continue
             if field.reference_type == Table:
@@ -179,23 +181,11 @@ def _collect_table_expressions(query: "Query", path_strings: Iterable[str]) -> l
 
 
 def _yield_columns_for_table_expression(te: TableExpression):
-    """Yield (alias, sql_expr) for every column of this table (same order as model._get_fields())."""
+    """Yield (alias, sql_expr) for every column of this table (1 field ↔ 1 column)."""
     model = te.table
     alias_prefix = te.sql_alias
-    for field in model._get_fields().values():
-        if field.is_reference:
-            if field.secondary_type is None:
-                if field.base_type == Table:
-                    yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}_table", f"{alias_prefix}.{field.name}_table"
-                yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}_id", f"{alias_prefix}.{field.name}_id"
-            elif issubclass(field.base_type, (list, tuple, set)):
-                if field.secondary_type == Table:
-                    yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}_tables", f"{alias_prefix}.{field.name}_tables"
-                yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}_ids", f"{alias_prefix}.{field.name}_ids"
-            else:
-                raise ValueError()
-        else:
-            yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.column_name}", f"{alias_prefix}.{field.column_name}"
+    for field in model._get_columns().values():
+        yield f"{alias_prefix}{ALIAS_SEPARATOR}{field.name}", f"{alias_prefix}.{field.name}"
 
 
 def _sql_from_join(table_expressions: list[TableExpression]) -> str:
@@ -339,10 +329,10 @@ class Query(BaseModel):
         if isinstance(column, str):
             path_str = column.replace("__", ".")
             parts = path_str.split(".")
-            e: ColumnExpression | TableExpression = self.table._root_expression()
+            e: ColumnExpression | TableExpression = self.table._expression
             for p in parts:
                 if isinstance(e, TableExpression):
-                    e = e.get_column_expression(p)
+                    e = e[p]
                 else:
                     raise ValueError(
                         f"Cannot resolve path '{path_str}': '{p}' is not a table (column expressions cannot be traversed)"
@@ -368,7 +358,7 @@ class Query(BaseModel):
                 lookup = "exact"
                 path_str = ".".join(parts)
             if not path_str.strip():
-                raise ValueError(f"where kwargs key {key!r} must include a field path (e.g. name__icontains or foo)")
+                raise ValueError(f"where kwargs key {key!r} must include a column path (e.g. name__icontains or foo)")
             expr = self.resolve(path_str)
             # For relation (TableExpression) + isnull, delegate to expr._isnull (uses FK column)
             if isinstance(expr, TableExpression) and lookup == "isnull":
@@ -381,21 +371,30 @@ class Query(BaseModel):
                     value = getattr(value, "id", value)
                 parent = expr.parent
                 if parent is not None and expr.path:
-                    field = parent.table._get_field(expr.path[-1])
-                    if field.is_reference:
-                        fk_col = parent.get_column_expression(field.column_name)
-                        result.append(fk_col == value)
-                        # Generic Table ref: also filter by _table so ref_id alone doesn't match another table's row
-                        if (
-                            field.base_type is Table
-                            and original_value is not None
-                            and hasattr(original_value, "_get_table_name")
-                            and not isinstance(original_value, type)
-                        ):
-                            table_col = ColumnExpression(
-                                table_expression=parent, name=f"{field.name}_table"
-                            )
-                            result.append(table_col == original_value._get_table_name())
+                    col = parent.table._get_column(expr.path[-1])
+                    if col.is_reference:
+                        fk_col = ColumnExpression(table_expression=parent, name=col.name)
+                        if col._is_polymorphic_ref:
+                            # Polymorphic: JSON column; filter by $.table and $.id
+                            if is_table(original_value.__class__):
+                                result.append(
+                                    FunctionExpression(
+                                        symbol="json_extract",
+                                        arguments=(fk_col, "$.table"),
+                                    ) == original_value._get_table_name()
+                                )
+                                result.append(
+                                    FunctionExpression(
+                                        symbol="json_extract",
+                                        arguments=(fk_col, "$.id"),
+                                    ) == value
+                                )
+                            elif original_value is None:
+                                result.append(fk_col.is_null())
+                            else:
+                                raise ValueError(f"Expected table instance or None; got {type(original_value)}")
+                        else:
+                            result.append(fk_col == value)
                         continue
             # Column (or fallback) lookups
             meth = _WHERE_LOOKUP_MAP.get(lookup)
@@ -411,8 +410,8 @@ class Query(BaseModel):
     def select(self, *columns: type[Table] | str | ColumnExpression | TableExpression) -> Query:
         """Set select/preload. Pass the table class for all fields (e.g. User), path strings (e.g. 'name', 'books.title'), or column/table expressions (e.g. User.id, User.books.title)."""
         if not columns:
-            root = self.table._root_expression()
-            columns = (root.get_column_expression("id"),)
+            root = self.table._expression
+            columns = (root["id"],)
         normalized = []
         for c in columns:
             if isinstance(c, type) and issubclass(c, Table):
@@ -473,7 +472,7 @@ class Query(BaseModel):
             elif isinstance(order, (ColumnExpression, TableExpression)):
                 resolved = self.resolve(order)
                 if isinstance(resolved, TableExpression):
-                    resolved = resolved.get_column_expression("id")
+                    resolved = resolved["id"]
                 order_by_expressions.append(OrderExpression(column_expression=resolved, desc=False))
             else:
                 raise TypeError(f"order_by requires table class, OrderExpression, ColumnExpression, or TableExpression; got {type(order)}")
@@ -590,6 +589,60 @@ class Query(BaseModel):
         preload_paths = _select_paths_from_expressions(self.table, self.select_expressions)
         return self._instance_from_data(self.table, dict(data), preload_paths)
 
+    def hydrate_instance(self, instance: Table, unparsed_data: list[dict[str, Any]]) -> None:
+        """Hydrate a Table instance from a row dict mapping column alias to unparsed value."""
+
+        # rearrange data per identifier
+        rearranged_data = {}
+        # go through each row
+        for unparsed_row in unparsed_data:
+            deep_defaultdict = lambda: defaultdict(deep_defaultdict)
+            data_per_table = deep_defaultdict()
+            # browse each column in the row
+            for alias, value in sorted(unparsed_row.keys()):
+                if ALIAS_SEPARATOR in alias:
+                    table_path, column_name = alias.rsplit(ALIAS_SEPARATOR, 1)
+                else:
+                    table_path, column_name = "", alias
+                data_per_table[table_path][column_name] = value
+            for table_path, values in sorted(data_per_table.keys()):
+                # go to where we need to integrate this
+                data = rearranged_data
+                if ALIAS_SEPARATOR in table_path:
+                    for part in table_path.split(ALIAS_SEPARATOR):
+                        data = data[part]
+                # do integration; do not repeat when the same identifier is found
+                # (successive rows may repeat same data for the same identifier when they are joined)
+                pk = values.pop("id")
+                if pk not in data:
+                    data[pk].update(values)
+        
+        # integrate data into the instance
+        assert len(rearranged_data) == 1
+        def integrate(o: object, data: dict[str, Any], table: type[Table]):
+            for pk, values in data.items():
+                for key, value in values.items():
+                    column = table._get_column(key)
+                    if column.is_reference:
+                        if column.is_collection:
+                            value = [table.load(id=id) for id in value]
+                        else:
+                            value = table.load(id=value)
+                        table = column.reference_type
+                    else:
+                        value = column.parse(value)
+                    setattr(o, key, value)
+
+        data = rearranged_data[next(iter(rearranged_data))]
+        instance.__dict__.update(data)
+
+    def build_instance(self, unparsed_data: dict[str, Any]) -> Table:
+        self.table._suspend_validation()
+        instance = self.table()
+        self.hydrate_instance(instance, unparsed_data)
+        self.table._resume_validation()
+        return instance
+
     def _instance_from_data(
         self,
         model: type[Table],
@@ -609,90 +662,95 @@ class Query(BaseModel):
 
         Returns:
             An instance of model, with all direct values set, related fields either populated
-            (if preloaded) or set up for lazy load, and ._lazy_joins indicating unresolved refs.
+            (if preloaded) or left for lazy load (ref field absent; _id/_ids in __dict__).
 
         Notes:
             - Handles both direct references and collection references (e.g., lists of related rows).
             - Supports partial row shapes where not all relationships are hydrated.
-            - Ensures lazy loaders for unresolved relationships; no premature loading.
+            - Unresolved refs: keeps _id/_ids in instance __dict__; ref field is popped so
+              Table.__getattribute__ derives laziness from schema + __dict__ and loads on access.
         """
-        _lazy_joins: dict[str, Any] = {}  # For unresolved refs, track what to lazy-load later
         _lazy_readonly: set[str] = set()   # Read-only scalars not fetched; will lazy-load on access
 
         # Iterate through each field of the Table model
-        for name, field in model._get_fields().items():
+        for name, field in model._get_columns().items():
 
             if field.is_reference:
-                # Handle single object relationships (e.g., foreign keys)
+                raw = data.get(name)
+                if isinstance(raw, str) and field._is_polymorphic_ref:
+                    raw = json.loads(raw)
+                elif isinstance(raw, str) and field.secondary_type is not None:
+                    raw = json.loads(raw)
+
+                # Scalar ref
                 if field.secondary_type is None:
-                    if field.base_type == Table:
-                        # Polymorphic reference: pop the table name if present
-                        reference_table = data.pop(f"{name}_table", None)
-                        reference_type = get_table_by_name(reference_table) if reference_table else None
-                    else:
-                        reference_type = field.reference_type
-
-                    # Get id value for reference; check for preloaded data
-                    reference_id = data.pop(f"{name}_id", None)
-
-                    if reference_id is None:
-                        # No value available; treat as null
+                    if raw is None:
                         data[name] = None
-                    elif name in data and isinstance(data.get(name), dict):
-                        # Preloaded related data; hydrate recursively
-                        data[name] = self._instance_from_data(
-                            reference_type,
-                            data[name],
-                            preload_paths,
-                            f"{path_prefix}.{name}".lstrip("."),
-                        )
+                    elif isinstance(raw, dict) and "table" in raw and "id" in raw:
+                        reference_type = get_table_by_name(raw["table"]) if raw["table"] else None
+                        segment = f"{path_prefix}.{name}".lstrip(".")
+                        # Preloaded: dict has extra keys (e.g. title); else lazy
+                        is_preloaded = any(k not in ("table", "id") for k in raw)
+                        if is_preloaded and (segment in preload_paths or any(p.startswith(segment + ".") for p in preload_paths)):
+                            data[name] = self._instance_from_data(
+                                reference_type,
+                                raw,
+                                preload_paths,
+                                segment,
+                            )
+                        else:
+                            data[name] = raw  # Lazy: __getattribute__ will load from raw
+                    elif isinstance(raw, int):
+                        nested = data.get(name)
+                        is_preloaded = isinstance(nested, dict) and "table" not in (nested or {})
+                        segment = f"{path_prefix}.{name}".lstrip(".")
+                        if is_preloaded and (segment in preload_paths or any(p.startswith(segment + ".") for p in preload_paths)):
+                            data[name] = self._instance_from_data(
+                                field.reference_type,
+                                nested,
+                                preload_paths,
+                                segment,
+                            )
+                        else:
+                            data[name] = raw  # Lazy
                     else:
-                        # Not preloaded: set up for lazy loading
-                        data.pop(name, None)  # Remove placeholder dict if present
-                        _lazy_joins[name] = (reference_type, reference_id)
+                        data[name] = raw
 
-                # Handle collections of references (e.g., Many-to-Many or One-to-Many)
+                # List ref
                 elif issubclass(field.base_type, (list, tuple, set)):
-                    references_ids = data.pop(f"{name}_ids", None)
-                    # If ids were serialized, parse them
-                    if isinstance(references_ids, str):
-                        references_ids = json.loads(references_ids)
-                    if references_ids is None:
-                        references_ids = []
-
-                    if field.secondary_type == Table:
-                        # Polymorphic multiple references: pop and decode table names
-                        references_tables = data.pop(f"{name}_tables", None)
-                        if isinstance(references_tables, str):
-                            references_tables = json.loads(references_tables)
-                        references_types = list(map(get_table_by_name, references_tables or []))
-                    else:
-                        # All references are same type
-                        references_types = [field.reference_type] * len(references_ids)
+                    references_ids = []
+                    references_types = []
+                    if isinstance(raw, list):
+                        if raw and isinstance(raw[0], dict):
+                            references_types = [
+                                get_table_by_name(item["table"]) if item.get("table") else None
+                                for item in raw
+                            ]
+                            references_ids = [item["id"] for item in raw]
+                        else:
+                            references_types = [field.reference_type] * len(raw)
+                            references_ids = raw or []
+                    data[name] = raw  # Keep raw for __getattribute__ lazy load
 
                     segment = f"{path_prefix}.{name}".lstrip(".")
-                    if not references_ids:
-                        # No related values
-                        data[name] = []
-                    elif (
+                    if (
                         segment in preload_paths
                         or any(p.startswith(segment + ".") for p in preload_paths)
-                    ):
-                        # Preloaded: hydrate each referenced instance
+                    ) and references_ids:
                         data[name] = [
                             ref_type.load(id=rid)
                             for ref_type, rid in zip(references_types, references_ids)
                         ]
+                    elif references_ids:
+                        pass  # data[name] = raw; __getattribute__ will lazy-load
                     else:
-                        # Non-preloaded: leave empty list, record for lazy load
                         data[name] = []
-                        _lazy_joins[name] = (references_types, references_ids)
                 else:
                     raise ValueError("Unexpected reference type in _instance_from_data")
             else:
                 # Normal (non-reference) field
                 if (
-                    name in getattr(model, "_READ_ONLY_FIELDS", ())
+                    name in getattr(model, "_READ_ONLY_COLUMNS", ())
                     and name != "id"
                     and name not in data
                 ):
@@ -705,13 +763,8 @@ class Query(BaseModel):
 
         instance = model(**data)            # Hydrate a Table instance
         instance.__dict__.update(data)      # Attach all data for non-pydantic usage
-        instance._lazy_joins = _lazy_joins  # Save what still needs to be lazy-loaded
-        instance._lazy_readonly = _lazy_readonly
 
-        # Remove lazy refs from __dict__ so __getattribute__ will intercept on first access
-        for name in _lazy_joins:
-            instance.__dict__.pop(name, None)
-
+        # Remove readonly from __dict__ so __getattribute__ will intercept on first access
         for name in _lazy_readonly:
             instance.__dict__.pop(name, None)
 
@@ -721,8 +774,7 @@ class Query(BaseModel):
 
     def __iter__(self) -> Iterable[Table]:
         """Execute the query and yield each row as a Table instance (self.table)."""
-        rows = self.execute(self.sql, self.values, rows_as_dicts=True)
-        for row_dict in rows:
+        for row_dict in self.rows(as_dicts=True):
             yield self.instance_from_row(row_dict)
 
     def all(self, limit: Optional[int] = None) -> list[Table]:
@@ -753,7 +805,7 @@ class Query(BaseModel):
         """
         if not new_values:
             return
-        read_only = set(new_values) & set(getattr(self.table, "_READ_ONLY_FIELDS", ()))
+        read_only = set(new_values) & set(getattr(self.table, "_READ_ONLY_COLUMNS", ()))
         if read_only:
             raise AttributeError(
                 f"Cannot set read-only attribute(s) of {self.table.__name__}: {', '.join(read_only)}"
@@ -780,20 +832,43 @@ class Query(BaseModel):
             sql = f"DELETE FROM {tbl}{self.sql_where}"
             self.execute(sql, self.values)
 
-    def get_one(self, *statements: Expression, **kwargs: Any) -> Table:
+    def rows(self, as_dicts=False) -> list[tuple[Any, ...]]:
+        """Return the query results as a list of tuples (row values)."""
+        return self.execute(self.sql, self.values, rows_as_dicts=as_dicts)
+
+    def get(self, *statements: Expression | Any, **kwargs: Any) -> Table | None:
         """Return a single Table instance (self.table) or None.
 
-        Args:
-            ensure_one_result: If True, require exactly one row: raise ValueError
-                when zero or more than one result; return the instance when one.
+        If exactly one positional argument is given and it is not an Expression,
+        it is treated as a primary key value (e.g. ``query.get(123)``).
+
+        Otherwise, arguments are passed to where() as usual (expressions and/or
+        kwargs for Django-style lookups).
 
         Returns:
-            One instance of self.table, or None if no row and ensure_one_result is False.
+            One instance of self.table, or None if no row matches.
+        """
+        if len(statements) == 1 and not isinstance(statements[0], Expression):
+            pk_value = statements[0]
+            rows = self.where(self.table.pk == pk_value).all(limit=1)
+        else:
+            rows = self.where(*statements, **kwargs).all(limit=1)
+        return rows[0] if rows else None
+
+    def get_one(self, *statements: Expression | Any, **kwargs: Any) -> Table:
+        """Return a single Table instance; raise ValueError if zero or multiple.
+
+        If exactly one positional argument is given and it is not an Expression,
+        it is treated as a primary key value (e.g. ``query.get_one(123)``).
 
         Raises:
-            ValueError: If ensure_one_result is True and there are zero or multiple results.
+            ValueError: If zero or more than one row matches.
         """
-        rows = self.where(*statements, **kwargs).all(limit=2)
+        if len(statements) == 1 and not isinstance(statements[0], Expression):
+            pk_value = statements[0]
+            rows = self.where(self.table.pk == pk_value).all(limit=2)
+        else:
+            rows = self.where(*statements, **kwargs).all(limit=2)
         if len(rows) == 0:
             raise ValueError("Query returned no results")
         if len(rows) > 1:
@@ -856,7 +931,7 @@ class Query(BaseModel):
             The upserted Table instance (inserted or updated row).
         """
         cls = self.table
-        read_only = set(data) & set(getattr(cls, "_READ_ONLY_FIELDS", ()))
+        read_only = set(data) & set(getattr(cls, "_READ_ONLY_COLUMNS", ()))
         if read_only:
             raise AttributeError(
                 f"Cannot set read-only attribute(s) of {cls.__name__}: {', '.join(read_only)}"
@@ -864,16 +939,16 @@ class Query(BaseModel):
         for name in on_conflict:
             if name not in data:
                 raise ValueError(
-                    f"on_conflict field {name!r} must be present in data"
+                    f"on_conflict column {name!r} must be present in data"
                 )
 
         search_kwargs = {name: data[name] for name in on_conflict}
         existing = cls.q().where(**search_kwargs).first()
         if existing:
-            update_data = {k: v for k, v in data.items() if k not in getattr(cls, "_READ_ONLY_FIELDS", ())}
+            update_data = {k: v for k, v in data.items() if k not in getattr(cls, "_READ_ONLY_COLUMNS", ())}
             if update_data:
-                cls.q().where(cls.get_column_expression("id") == existing.id).update(**update_data)
-            return cls.q().where(cls.get_column_expression("id") == existing.id).first()
+                cls.q().where(cls.id == existing.id).update(**update_data)
+            return cls.q().where(cls.id == existing.id).first()
         return cls(**data)
 
     def insert(
@@ -923,10 +998,10 @@ class Query(BaseModel):
         processed_data = cls.process_data(init_data)
         formatted_data = {}
 
-        for name, field in cls._get_fields().items():
+        for name, field in cls._get_columns().items():
             if (
                 not field.is_reference
-                and name not in cls._READ_ONLY_FIELDS
+                and name not in cls._READ_ONLY_COLUMNS
                 and field.default is not None
             ):
                 include.add(name)
@@ -940,7 +1015,7 @@ class Query(BaseModel):
             else:
                 formatted_data[name] = value
 
-        for name, field in cls._get_fields().items():
+        for name, field in cls._get_columns().items():
             if name not in include or name in exclude or field.is_reference:
                 continue
             if name not in processed_data and field.default is not None:
@@ -961,14 +1036,14 @@ class Query(BaseModel):
             tbl = cls._get_table_name()
             sql = f"INSERT INTO {tbl} DEFAULT VALUES\nRETURNING id"
             rows = self.execute(sql, [], ensure_structure=True)
-        id_field = cls._get_field("id")
+        id_field = cls._get_column("id")
         object.__setattr__(instance, "id", id_field.parse(rows[0][0]))
         instance._mark_readonly_lazy()
 
-        for name, field in cls._get_fields().items():
+        for name, field in cls._get_columns().items():
             if (
                 not field.is_reference
-                and name not in cls._READ_ONLY_FIELDS
+                and name not in cls._READ_ONLY_COLUMNS
                 and field.default is not None
                 and name not in processed_data
             ):

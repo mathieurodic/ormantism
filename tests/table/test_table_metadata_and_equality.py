@@ -1,4 +1,4 @@
-"""Tests for Table metadata (_get_fields, _get_table_name, _get_field), options inheritance, __eq__, __hash__, __deepcopy__."""
+"""Tests for Table metadata (_get_columns, _get_table_name, _get_column), options inheritance, __eq__, __hash__, __deepcopy__."""
 
 import copy
 import pytest
@@ -19,39 +19,39 @@ class TestTableMetadata:
             name: str
             value: int = 42
 
-        fields = TestTable._get_fields()
+        columns = TestTable._get_columns()
 
-        assert 'name' in fields
-        assert 'value' in fields
-        assert 'id' in fields
-        assert 'created_at' in fields
+        assert 'name' in columns
+        assert 'value' in columns
+        assert 'id' in columns
+        assert 'created_at' in columns
 
-    def test_get_field_by_column_name(self, setup_db):
+    def test_get_column_by_name(self, setup_db):
         class B(Table, with_timestamps=True):
             value: int = 0
 
         class C(Table, with_timestamps=True):
             links_to: B | None = None
 
-        field = C._get_field("links_to_id")
-        assert field.name == "links_to"
-        assert field.column_name == "links_to_id"
+        column = C._get_column("links_to")
+        assert column.name == "links_to"
+        assert column.is_reference
 
-    def test_get_field_raises_for_unknown(self, setup_db):
+    def test_get_column_raises_for_unknown(self, setup_db):
         class A(Table, with_timestamps=True):
             name: str
 
-        with pytest.raises(KeyError, match="No such field"):
-            A._get_field("nonexistent")
+        with pytest.raises(KeyError, match="No such column"):
+            A._get_column("nonexistent")
 
-    def test_has_field(self, setup_db):
-        """_has_field returns True for existing field, False for missing (line 211)."""
+    def test_has_column(self, setup_db):
+        """_has_column returns True for existing column, False for missing."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        assert A._has_field("name") is True
-        assert A._has_field("id") is True
-        assert A._has_field("nonexistent") is False
+        assert A._has_column("name") is True
+        assert A._has_column("id") is True
+        assert A._has_column("nonexistent") is False
 
     def test_check_read_only_raises(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -68,7 +68,7 @@ class TestTableMetadata:
             name: str
 
         with pytest.raises(ValueError, match="Invalid key"):
-            A.process_data({"not_a_field": 1})
+            A.process_data({"not_a_column": 1})
 
     def test_load_as_collection(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -91,17 +91,17 @@ class TestTableMetaOptions:
         class A(Table, with_created_at_timestamp=True, with_timestamps=False):
             name: str = ""
 
-        assert "created_at" in A._get_fields()
-        assert "deleted_at" not in A._get_fields()
-        assert "updated_at" not in A._get_fields()
+        assert "created_at" in A._get_columns()
+        assert "deleted_at" not in A._get_columns()
+        assert "updated_at" not in A._get_columns()
 
     def test_with_updated_at_timestamp_only(self, setup_db):
         class A(Table, with_updated_at_timestamp=True, with_timestamps=False):
             name: str = ""
 
-        assert "updated_at" in A._get_fields()
-        assert "created_at" not in A._get_fields()
-        assert "deleted_at" not in A._get_fields()
+        assert "updated_at" in A._get_columns()
+        assert "created_at" not in A._get_columns()
+        assert "deleted_at" not in A._get_columns()
 
     def test_inherit_connection_name_from_base(self, setup_db):
         class Base(Table, connection_name="custom_conn"):
@@ -177,15 +177,15 @@ class TestTableLazyReadonly:
     """Table __getattr__ for lazy read-only scalars."""
 
     def test_getattr_lazy_readonly_fetches_and_caches(self, setup_db):
-        """__getattr__ for lazy readonly fetches from DB and caches (created_at path)."""
+        """__getattribute__ for lazy readonly fetches from DB and caches (created_at path)."""
         class A(Table, with_timestamps=True):
             name: str = ""
 
         a = A(name="x")
         assert a.id is not None
-        # After update, _mark_readonly_lazy can leave created_at as lazy
+        # After update, _mark_readonly_lazy can leave created_at as lazy (not in __dict__)
         a._mark_readonly_lazy()
-        assert "created_at" in a._lazy_readonly
+        assert "created_at" not in a.__dict__
         created = getattr(a, "created_at")
         assert created is not None
-        assert "created_at" not in a._lazy_readonly
+        assert "created_at" in a.__dict__  # now cached

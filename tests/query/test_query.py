@@ -110,7 +110,7 @@ class TestQuerySelect:
 
         b = B()
         C(links_to=b)
-        q = Query(table=C).select(C.pk, C.links_to).where(C.get_column_expression("links_to_id") == _pk(b))
+        q = Query(table=C).select(C.pk, C.links_to).where(C.links_to == b)
         rows = list(q)
         assert len(rows) >= 1
         assert rows[0].links_to is not None
@@ -254,7 +254,7 @@ class TestQueryWhereKwargsAndFilter:
             name: str = ""
 
         q = Query(table=A)
-        with pytest.raises(ValueError, match="field path"):
+        with pytest.raises(ValueError, match="column path"):
             q.where(**{"__exact": 5})
 
     def test_where_relation_exact_fk_comparison(self, setup_db):
@@ -593,6 +593,43 @@ class TestQueryAllGetFirst:
         row = q.get_one()
         assert row is not None
         assert row.id == a.id
+
+    def test_get_by_pk_value_returns_row(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="x")
+        row = Query(table=A).get(_pk(a))
+        assert row is not None
+        assert row.id == a.id
+        assert row.name == "x"
+
+    def test_get_by_pk_value_none_returns_none(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        row = Query(table=A).get(999999)
+        assert row is None
+
+    def test_get_by_expression_unchanged(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="y")
+        row = Query(table=A).get(A.pk == _pk(a))
+        assert row is not None
+        assert row.id == a.id
+
+    def test_get_one_by_pk_value(self, setup_db):
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a = A(name="z")
+        row = Query(table=A).get_one(_pk(a))
+        assert row is not None
+        assert row.id == a.id
+        with pytest.raises(ValueError, match="no results"):
+            Query(table=A).get_one(999999)
 
     def test_count(self, setup_db):
         class A(Table, with_timestamps=True):
@@ -1210,7 +1247,6 @@ class TestInstanceFromRowAndHydrationCoverage:
         loaded = Parent.load(id=p.id)
         assert loaded is not None
         assert loaded.id == 1
-        assert "kids" in loaded._lazy_joins
         kids = loaded.kids
         assert len(kids) == 2
         ids = sorted(k.id for k in kids)
@@ -1265,7 +1301,7 @@ class TestInstanceFromRowAndHydrationCoverage:
         tbl = A._get_table_name()
         row_dict = {
             f"{tbl}{ALIAS_SEPARATOR}id": 1,
-            f"{tbl}{ALIAS_SEPARATOR}book_id": None,
+            f"{tbl}{ALIAS_SEPARATOR}book": None,
         }
         q = Query(table=A)
         inst = q.instance_from_row(row_dict)
@@ -1539,8 +1575,7 @@ class TestPolymorphicRefAndJoinCoverage:
         Query(table=A).ensure_table_structure()
         q = Query(table=A).select(A)
         sql = q.sql
-        assert "ref_table" in sql
-        assert "ref_id" in sql
+        assert "a.ref" in sql
 
     def test_select_joined_table_builds_join_sql(self, setup_db):
         class B(Table, with_timestamps=True):
@@ -1588,8 +1623,7 @@ class TestPolymorphicRefAndJoinCoverage:
         Query(table=B).ensure_table_structure()
         q = Query(table=A).select(A.pk)
         sql = q.sql
-        assert "items_ids" in sql
-        assert "items_tables" in sql
+        assert "a.items" in sql
 
 
 class TestPolymorphicListRefHydration:
@@ -1611,8 +1645,7 @@ class TestPolymorphicListRefHydration:
         tbl = A._get_table_name()
         row_dict = {
             f"{tbl}{ALIAS_SEPARATOR}id": 1,
-            f"{tbl}{ALIAS_SEPARATOR}items_ids": "[1, 2]",
-            f"{tbl}{ALIAS_SEPARATOR}items_tables": '["b", "b"]',
+            f"{tbl}{ALIAS_SEPARATOR}items": '[{"table": "b", "id": 1}, {"table": "b", "id": 2}]',
         }
         q = Query(table=A).select(A.pk, A.items)
         inst = q.instance_from_row(row_dict)
@@ -1692,7 +1725,7 @@ class TestQueryCoverageHelpers:
             name: str = ""
             value: int = 0
 
-        with pytest.raises(ValueError, match="on_conflict field .name. must be present"):
+        with pytest.raises(ValueError, match="on_conflict column .name. must be present"):
             A.q().upsert(on_conflict=["name"], value=1)
 
     def test_upsert_without_unique_constraint(self, setup_db):
@@ -1890,10 +1923,9 @@ class TestQueryCoverageHelpers:
             secondary_type=B,
             base_type=dict,
             reference_type=B,
-            column_name="ref_id",
         )
-        patched_fields = {**A._get_fields(), "ref": fake_ref}
-        with patch.object(A, "_get_fields", return_value=patched_fields):
+        patched_fields = {**A._get_columns(), "ref": fake_ref}
+        with patch.object(A, "_get_columns", return_value=patched_fields):
             q = Query(table=A)
             with pytest.raises(ValueError, match="Unexpected reference type"):
                 q.instance_from_row(row_dict)

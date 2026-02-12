@@ -9,6 +9,25 @@ from ormantism.column import Column
 from ormantism import JSON
 
 
+def test_parse_none():
+    class T(Table):
+        name: str
+
+    col = Column.from_pydantic_info(T, "name", T.model_fields["name"])
+    assert col.parse(None) is None
+
+
+def test_parse_reference_returns_raw():
+    class B(Table):
+        value: int = 0
+
+    class C(Table):
+        ref: B | None = None
+
+    col = Column.from_pydantic_info(C, "ref", C.model_fields["ref"])
+    assert col.parse(42) == 42
+
+
 def test_parse_json_non_string_returns_value():
     """parse(JSON) with non-string returns value as-is (line 274)."""
     class T(Table):

@@ -173,10 +173,10 @@ class TestLoadOrCreate:
         b1 = B1(tag="one")
         b2 = B2(tag="two")
         p = Poly(key="k", ref=b1)
-        # Load without preload so ref is in _lazy_joins as (B1, id)
+        # Load without preload so ref is lazy (ref in __dict__ with raw JSON, loads on access)
         loaded = Poly.load(key="k")
-        assert "ref" in loaded._lazy_joins
-        assert loaded._lazy_joins["ref"][0] is B1
+        assert "ref" in loaded.__dict__
+        assert loaded.__dict__["ref"] == {"table": "b1", "id": 1}
         # Update via load_or_create with same-type ref but different id (hits 94-95)
         b1_other = B1(tag="other")
         p2 = Poly.load_or_create(_search_fields=("key",), key="k", ref=b1_other)

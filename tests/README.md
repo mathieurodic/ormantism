@@ -138,7 +138,7 @@ Tests for `ormantism.table_mixins`: `_WithTimestamps._transform_query`, `_WithVe
 
 ### table/test_table_metadata_and_equality.py
 
-Tests for Table metadata and equality: `_get_fields`, `_get_table_name`, `_get_field`, options inheritance (e.g. versioning_along), `__eq__`, `__hash__`, `__deepcopy__`, and lazy read-only `__getattr__`.
+Tests for Table metadata and equality: `_get_columns`, `_get_table_name`, `_get_column`, options inheritance (e.g. versioning_along), `__eq__`, `__hash__`, `__deepcopy__`, and lazy read-only `__getattr__`.
 
 ### table/test_table_schema_and_delete.py
 

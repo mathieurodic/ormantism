@@ -1,4 +1,4 @@
-"""Tests for Table CRUD, timestamps, relationships, lazy loading, and versioning."""
+"""Tests for Table CRUD, timestamps, relationships, load-on-access, and versioning."""
 
 import pytest
 from ormantism.table import Table
@@ -11,21 +11,21 @@ class TestBasicTableOperations:
         class A(Table, with_timestamps=False):
             pass
 
-        fields = A._get_fields()
-        assert 'id' in fields
-        assert 'created_at' not in fields
-        assert 'updated_at' not in fields
-        assert 'deleted_at' not in fields
+        columns = A._get_columns()
+        assert 'id' in columns
+        assert 'created_at' not in columns
+        assert 'updated_at' not in columns
+        assert 'deleted_at' not in columns
 
     def test_table_with_timestamps_true(self, setup_db):
         class TTWTT(Table, with_timestamps=True):
             value: int = 42
 
-        fields = TTWTT._get_fields()
-        assert 'id' in fields
-        assert 'created_at' in fields
-        assert 'updated_at' in fields
-        assert 'deleted_at' in fields
+        columns = TTWTT._get_columns()
+        assert 'id' in columns
+        assert 'created_at' in columns
+        assert 'updated_at' in columns
+        assert 'deleted_at' in columns
 
         b = TTWTT()
         assert b.value == 42
@@ -46,9 +46,9 @@ class TestTableRelationships:
         class C(Table, with_timestamps=True):
             links_to: B|None = None
 
-        c_fields = C._get_fields()
-        assert 'links_to' in c_fields
-        assert c_fields['links_to'].is_reference
+        c_columns = C._get_columns()
+        assert 'links_to' in c_columns
+        assert c_columns['links_to'].is_reference
 
         b = B()
         assert b.id is not None
@@ -80,7 +80,7 @@ class TestLazyLoading:
             assert linked_b.id == b.id
         expect_lazy_loads.expect(0)
 
-    def test_lazy_loading(self, setup_db, expect_lazy_loads):
+    def test_load_on_access(self, setup_db, expect_lazy_loads):
         class B(Table, with_timestamps=True):
             value: int = 42
 

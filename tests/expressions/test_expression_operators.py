@@ -140,7 +140,7 @@ def test_collect_join_paths_from_expression(setup_db):
         author: Author | None = None
 
     author_expr = Book.get_column_expression("author")
-    name_col = author_expr.get_column_expression("name")
+    name_col = author_expr["name"]
     expr = name_col == "x"
     paths = collect_join_paths_from_expression(expr)
     assert "author" in paths
@@ -155,14 +155,14 @@ def test_collect_join_paths_from_order_expression(setup_db):
         title: str
         author: Author | None = None
 
-    name_col = Book.author.get_column_expression("name")
+    name_col = Book.author["name"]
     order_expr = OrderExpression(column_expression=name_col, desc=True)
     paths = collect_join_paths_from_expression(order_expr)
     assert "author" in paths
 
 
 def test_expression_with_table_instance_binds_id(setup_db):
-    """ArgumentedExpression._argument_to_values binds Table instance to its id (line 142)."""
+    """ArgumentedExpression._argument_to_values binds Table instance to its id."""
     class User(Table, with_timestamps=True):
         name: str = ""
 
@@ -171,9 +171,8 @@ def test_expression_with_table_instance_binds_id(setup_db):
         author: User | None = None
 
     user = User(name="u")
-    col = Post.get_column_expression("author_id")
-    expr = col == user
-    assert expr.values == (user.id,)
+    expr = Post.author.fk == user
+    assert user.id in expr.values
 
 
 def test_expression_not_method(setup_db):

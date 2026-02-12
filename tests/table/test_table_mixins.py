@@ -23,7 +23,7 @@ class TestWithTimestampsTransformQuery:
 
             @classmethod
             def _transform_query(cls, q):
-                q = q.order_by(cls._root_expression().get_column_expression("name"))
+                q = q.order_by(cls._expression["name"])
                 return q
 
         q = A.q()

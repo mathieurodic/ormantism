@@ -6,6 +6,7 @@ import pytest
 from ormantism.table import Table
 from ormantism.query import Query
 from ormantism.column import Column
+from ormantism.expressions import ALIAS_SEPARATOR
 
 
 def test_join_tree_non_reference_path_builds_without_join(setup_db):
@@ -56,14 +57,14 @@ def test_join_tree_sql_columns_have_aliases(setup_db):
 
 
 def test_join_tree_unsupported_reference_type_raises(setup_db):
-    """Building columns for a reference field that is not scalar or list/tuple/set raises."""
+    """Hydrating a reference column that is not scalar or list/tuple/set raises."""
     class A(Table, with_timestamps=True):
         name: str = ""
 
     class B(Table, with_timestamps=True):
         value: int = 0
 
-    bad_field = Column(
+    bad_column = Column(
         table=A,
         name="unsupported_ref",
         base_type=dict,
@@ -74,17 +75,19 @@ def test_join_tree_unsupported_reference_type_raises(setup_db):
         is_required=False,
         is_reference=True,
     )
-    real_fields = A._get_fields()
-    patched_fields = {**real_fields, "unsupported_ref": bad_field}
+    real_columns = A._get_columns()
+    patched_columns = {**real_columns, "unsupported_ref": bad_column}
 
-    q = Query(table=A)
-    with patch.object(A, "_get_fields", return_value=patched_fields):
-        with pytest.raises(ValueError):
-            _ = q.sql
+    tbl = A._get_table_name()
+    row_dict = {f"{tbl}{ALIAS_SEPARATOR}id": 1, f"{tbl}{ALIAS_SEPARATOR}name": "x"}
+    with patch.object(A, "_get_columns", return_value=patched_columns):
+        q = Query(table=A)
+        with pytest.raises(ValueError, match="Unexpected reference type"):
+            q.instance_from_row(row_dict)
 
 
 def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
-    """Load without preload: list[ConcreteTable] is stored as lazy."""
+    """Load without preload: list[ConcreteTable] is lazy; kids in __dict__ (JSON ids), kids loads on access."""
     class Child(Table, with_timestamps=True):
         x: int = 0
 
@@ -96,13 +99,9 @@ def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
     parent = Parent(kids=[c1, c2])
     loaded = Parent.load(id=parent.id)
     assert loaded is not None
-    assert "_lazy_joins" in loaded.__dict__
-    assert "kids" in loaded._lazy_joins
-    ref_types, ref_ids = loaded._lazy_joins["kids"]
-    assert len(ref_types) == 2
-    assert ref_types[0] is Child and ref_types[1] is Child
-    assert ref_ids == [c1.id, c2.id]
-    # Access kids and use it triggers one lazy load (loads the list)
+    assert "kids" in loaded.__dict__
+    assert loaded.__dict__["kids"] == [c1.id, c2.id]
+    # Access kids triggers one lazy load (loads the list)
     assert len(loaded.kids) == 2
     expect_lazy_loads.expect(1)
 

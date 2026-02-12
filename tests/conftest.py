@@ -38,10 +38,10 @@ def expect_lazy_loads(recwarn):
 def setup_db(request):
     """Setup a temporary SQLite database for each test.
 
-    Uses an in-memory database by default. Set ORMANTISM_DB_FILE to use
+    Uses an in-memory database by default. Set ORMANTISM_TESTS_USE_DB_FILES to use
     a file database (e.g. for debugging).
     """
-    if os.environ.get("ORMANTISM_DB_FILE"):
+    if os.environ.get("ORMANTISM_TESTS_USE_DB_FILES"):
         path = (
             f"/tmp/ormantism-tests/test-{request.function.__module__}"
             f"-{request.function.__name__}.sqlite3"

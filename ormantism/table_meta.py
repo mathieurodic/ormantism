@@ -60,7 +60,7 @@ class TableMeta(ModelMetaclass):
                     versioning_along = base._VERSIONING_ALONG
         result._VERSIONING_ALONG = versioning_along
         # read-only
-        result._READ_ONLY_FIELDS = sum((tuple(base.model_fields.keys())
+        result._READ_ONLY_COLUMNS = sum((tuple(base.model_fields.keys())
                                         for base in default_bases), start=())
         # Column instances: stored in _columns only (not as class attrs) so Pydantic
         # does not copy the descriptor into instance.__dict__; same objects in result._columns.
@@ -72,11 +72,11 @@ class TableMeta(ModelMetaclass):
         # Skip read-only fields (id, created_at, etc.) so instance.id returns the stored value, not an expression.
         root = TableExpression(table=result, parent=None, path=())
         for fname in result._columns:
-            if fname in result._READ_ONLY_FIELDS:
+            if fname in result._READ_ONLY_COLUMNS:
                 continue
-            setattr(result, fname, root.get_column_expression(fname))
+            setattr(result, fname, root[fname])
         # Class-level pk expression for query building (e.g. A.pk == 1), without shadowing instance.id.
-        setattr(result, "pk", root.get_column_expression("id"))
+        setattr(result, "pk", root["id"])
         # Root table expression for select(Model._expression) and helpers that take a TableExpression.
         setattr(result, "_expression", root)
         # Connection descriptor (set here so Pydantic does not treat _connection as a private attr).

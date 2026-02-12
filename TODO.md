@@ -15,7 +15,7 @@ Ongoing and potential improvements for the Ormantism project. See [README.md](RE
 
 ## Testing
 
-- **Test environment**: `tests/conftest.py` uses `/tmp` and `request.function` when `ORMANTISM_DB_FILE` is set. Consider using pytest’s `tmp_path` for DB paths to improve portability.
+- **Test environment**: `tests/conftest.py` uses `/tmp` and `request.function` when `ORMANTISM_TESTS_USE_DB_FILES` is set. Consider using pytest’s `tmp_path` for DB paths to improve portability.
 - **Test style**: In `tests/connection/test_connection.py`, replace `print()` with assertions or structured logging, and avoid bare `except` where possible (e.g. `except FileNotFoundError:pass`).
 - **CI matrix**: `pyproject.toml` has `requires-python = ">=3.12"`. CI only runs 3.12. Consider adding 3.13 (and optionally 3.12 + 3.13 matrix) to catch compatibility issues.
 - **Optional test deps**: Add an optional dependency group in `pyproject.toml` for tests (e.g. `pytest`, `pytest-cov`) so contributors can install with `pip install -e ".[tests]"`.

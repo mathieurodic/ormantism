@@ -19,8 +19,8 @@ def test_sql_creations_scalar_reference_to_table():
     info = Poly.model_fields["target"]
     f = Column.from_pydantic_info(Poly, "target", info)
     sqls = list(f.sql_creations)
-    assert any("target_table" in s for s in sqls)
-    assert any("target_id" in s for s in sqls)
+    # Polymorphic refs stored as single JSON column
+    assert any("target" in s and "JSON" in s for s in sqls)
 
 
 def test_sql_creations_list_of_table_references():
@@ -32,8 +32,8 @@ def test_sql_creations_list_of_table_references():
     assert f.base_type is list
     assert f.secondary_type is Table
     sqls = list(f.sql_creations)
-    assert any("items_tables" in s for s in sqls)
-    assert any("items_ids" in s for s in sqls)
+    # Polymorphic list refs stored as single JSON column
+    assert any("items" in s and "JSON" in s for s in sqls)
 
 
 def test_sql_creations_list_of_table_references_explicit_field():
@@ -52,8 +52,7 @@ def test_sql_creations_list_of_table_references_explicit_field():
         is_reference=True,
     )
     sqls = list(f.sql_creations)
-    assert any("items_tables" in s for s in sqls)
-    assert any("items_ids" in s for s in sqls)
+    assert any("items" in s and "JSON" in s for s in sqls)
 
 
 def test_sql_creations_enum_column():
@@ -125,7 +124,7 @@ def test_sql_is_json_true_for_json_stored_types():
 
 
 def test_sql_creations_reference_non_list_tuple_set_raises():
-    """sql_creations for reference with base_type not list/tuple/set raises (line 186)."""
+    """sql_creations for reference with base_type not list/tuple/set raises."""
     import collections.abc
 
     class B(Table):
@@ -145,9 +144,8 @@ def test_sql_creations_reference_non_list_tuple_set_raises():
         column_is_required=False,
         is_reference=True,
     )
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(TypeError, match="Reference list must use list/tuple/set"):
         list(f.sql_creations)
-    assert exc_info.value.args[0] is collections.abc.Sequence
 
 
 def test_sql_creations_unsupported_type_raises():
