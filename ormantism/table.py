@@ -41,56 +41,48 @@ class Table(metaclass=TableMeta):
 
     def __hash__(self):
         """Hash for equality and use in sets/dicts."""
-        # Ensure lazy columns are loaded so hash is consistent
-        return hash((self.__class__, self.id))
-
-    def _load(self, names: tuple[str, ...]):
-        """Load a value from the database for a given column name, using the current instance's identifier."""
-        for name in names:
-            col = type(self)._get_columns().get(name)
-            if col is not None and col.is_reference:
-                warnings.warn(
-                    f"Lazy loading '{name}' on {type(self).__name__}: consider preloading "
-                    f"(e.g. Model.q().select(Model.{name}).where(...))",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                break
-        rows = self.q().select(*names).where(id=self.id).rows(as_dicts=True)
-        if not rows:
-            return
-        row = dict(rows[0])
-        if "id" not in row:
-            row["id"] = self.id
-        self._load_row(row)
-    
-    def _load_row(self, row: dict[str, Any]):
-        self.hydrate_with([row])
+        raw_id = object.__getattribute__(self, "__dict__").get("id")
+        if isinstance(raw_id, ColumnExpression):
+            raise TypeError(
+                "Cannot hash Table instance with unloaded primary key 'id'. "
+                "Include 'id' in the select or load the row before using in sets/dicts."
+            )
+        return hash((self.__class__, raw_id))
 
     def __getattribute__(self, name: str) -> Any:
         """Lazy-load columns on first access; derive from schema + __dict__."""
         d = object.__getattribute__(self, "__dict__")
-        cls = type(self)
-        try:
-            column = cls._get_column(name)
-        except KeyError:
-            if name in d:
-                return d[name]
-            return object.__getattribute__(self, name)
-
-        if name in d:
-            val = d[name]
-            # Pydantic may use cls.id etc. as defaults, so __dict__ can hold a ColumnExpression.
-            # Treat that as "not loaded": return None for id, lazy-load others.
-            if isinstance(val, ColumnExpression):
-                if name == "id":
-                    return None
-                self._load((name,))
-                return d.get(name)
-            return val
-
-        self._load((name,))
-        return d.get(name)
+        if name not in d:
+            cls = object.__getattribute__(self, "__class__")
+            if cls._has_column(name):
+                d[name] = getattr(cls, name)  # put ColumnExpression so we fall through to load
+            else:
+                return object.__getattribute__(self, name)
+        value = d.get(name)
+        if not isinstance(value, ColumnExpression):
+            return value
+        # id as ColumnExpression means "not yet assigned" (e.g. before insert); return None
+        if name == "id":
+            return None
+        # Get id without triggering __getattribute__ (avoids recursion when id is also lazy)
+        raw_id = object.__getattribute__(self, "__dict__").get("id")
+        if isinstance(raw_id, ColumnExpression):
+            raise ValueError(
+                "Cannot lazy-load columns: primary key 'id' must be loaded first. "
+                "Include 'id' in the select (e.g. Model.q().select('id', 'name').where(...))."
+            )
+        warnings.warn(
+            f"Lazy loading '{name}' on {type(self).__name__}: consider preloading "
+            f"(e.g. Model.q().select('{name}').where(...))",
+            UserWarning,
+            stacklevel=2,
+        )
+        rows = self.q().select(name).where(id=raw_id).rows(as_dicts=True)
+        if not rows:
+            raise ValueError(f"No row found for {name} with id {raw_id}")
+        parsed_value = self.__class__._get_column(name).parse(rows[0].get(name))
+        self.__dict__[name] = parsed_value
+        return parsed_value
 
     def __getattr__(self, name: str) -> Any:
         """Raise for unknown attributes (lazy columns are handled in __getattribute__)."""

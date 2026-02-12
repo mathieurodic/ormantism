@@ -186,7 +186,7 @@ class TestTableLazyReadonly:
         # Simulate created_at not in __dict__ (e.g. after lazy invalidation)
         a.__dict__.pop("created_at", None)
         assert "created_at" not in a.__dict__
-        created = getattr(a, "created_at")
+        created = a.created_at
         assert created is not None
         assert "created_at" in a.__dict__  # now cached
 

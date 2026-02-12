@@ -1273,8 +1273,8 @@ class TestHydrationFromRowDict:
         )
         vals = sorted(k.x for k in kids)
         assert vals == [10, 20]
-        # kids comes from row (list ref as JSON); no lazy load when accessing it.
-        expect_lazy_loads.expect(0)
+        # kids comes from row (list ref as JSON); no lazy load for kids. Accessing k.x triggers 1 lazy load per child.
+        expect_lazy_loads.expect(1)
 
     @pytest.mark.skip(reason="preload for list refs in load() not yet supported (join column naming)")
     def test_preload_list_ref_avoids_lazy(self, setup_db, expect_lazy_loads):
