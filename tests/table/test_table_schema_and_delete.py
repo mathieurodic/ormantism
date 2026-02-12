@@ -1,4 +1,4 @@
-"""Tests for Table schema (_create_table, _add_columns), process_data, delete(), and load() ordering."""
+"""Tests for Table schema (create_table, add_columns), process_data, delete(), and load() ordering."""
 
 import sqlite3
 import pytest
@@ -6,17 +6,18 @@ from unittest.mock import patch
 from pydantic import BaseModel
 
 from ormantism.table import Table
+from ormantism.query import create_table, add_columns
 
 
 class TestCreateTableAndAddColumns:
-    """Test _create_table and _add_columns edge cases."""
+    """Test create_table and add_columns edge cases."""
 
     def test_create_table_skips_fk_for_base_type_table(self, setup_db):
         class Poly(Table, with_timestamps=True):
             target: Table | None = None
 
-        Poly._create_table()
-        Poly._add_columns()
+        create_table(Poly)
+        add_columns(Poly)
 
     def test_create_table_creates_referenced_table_first(self, setup_db):
         class Refd(Table, with_timestamps=True):
@@ -25,7 +26,7 @@ class TestCreateTableAndAddColumns:
         class Refing(Table, with_timestamps=True):
             ref: Refd | None = None
 
-        Refing._create_table()
+        create_table(Refing)
         r = Refd()
         i = Refing(ref=r)
         assert i.ref is not None and i.ref.id == r.id
@@ -34,9 +35,9 @@ class TestCreateTableAndAddColumns:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        A._create_table()
-        A._add_columns()
-        A._add_columns()
+        create_table(A)
+        add_columns(A)
+        add_columns(A)
 
     def test_add_columns_reraises_other_operational_error(self, setup_db):
         from ormantism.query import Query
@@ -44,8 +45,8 @@ class TestCreateTableAndAddColumns:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        A._create_table()
-        A._add_columns()
+        create_table(A)
+        add_columns(A)
         original_execute = Query.execute
 
         def execute_raise_on_alter(self, sql, parameters=None, ensure_structure=True):
@@ -57,7 +58,7 @@ class TestCreateTableAndAddColumns:
 
         with patch.object(Query, "execute", execute_raise_on_alter):
             with pytest.raises(sqlite3.OperationalError):
-                A._add_columns()
+                add_columns(A)
 
 
 class TestProcessData:

@@ -68,8 +68,6 @@
 | ormantism.table.Table._get_fields | ormantism/table.py:221 | ormantism/table.py:153<br>ormantism/table.py:300<br>ormantism/table.py:313<br>ormantism/table.py:332<br>ormantism/table.py:354<br>ormantism/table.py:366<br>ormantism/table.py:372<br>ormantism/table.py:384<br>ormantism/table.py:460<br>ormantism/join_info.py:53<br>ormantism/join_info.py:110 |
 | ormantism.table.Table._get_field | ormantism/table.py:230 | ormantism/table.py:255<br>ormantism/table.py:274<br>ormantism/table.py:341<br>ormantism/table.py:403<br>ormantism/table.py:435<br>ormantism/join_info.py:25<br>ormantism/join_info.py:77 |
 | ormantism.table.Table._get_non_default_fields | ormantism/table.py:245 | |
-| ormantism.table.Table._create_table | ormantism/table.py:296 | ormantism/table.py:322<br>ormantism/table.py:358 |
-| ormantism.table.Table._add_columns | ormantism/table.py:334 | ormantism/table.py:323 |
 | ormantism.table.Table.check_read_only | ormantism/table.py:433 | ormantism/table.py:129<br>ormantism/table.py:205 |
 | ormantism.table.Table.process_data | ormantism/table.py:372 | ormantism/table.py:152<br>ormantism/table.py:206<br>ormantism/table.py:406 |
 | ormantism.table.Table.delete | ormantism/table.py:418 | |

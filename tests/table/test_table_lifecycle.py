@@ -2,6 +2,7 @@
 
 import pytest
 from ormantism.table import Table
+from ormantism.query import create_table, add_columns
 
 
 class TestOnAfterCreatePaths:
@@ -45,8 +46,8 @@ class TestOnAfterCreatePaths:
         class IdAndTimestampsOnly(Table, with_timestamps=True):
             pass
 
-        IdAndTimestampsOnly._create_table()
-        IdAndTimestampsOnly._add_columns()
+        create_table(IdAndTimestampsOnly)
+        add_columns(IdAndTimestampsOnly)
         inst = object.__new__(IdAndTimestampsOnly)
         inst.__dict__.update({"id": None})
         inst.on_after_create({})

@@ -142,7 +142,7 @@ Tests for Table metadata and equality: `_get_fields`, `_get_table_name`, `_get_f
 
 ### table/test_table_schema_and_delete.py
 
-Tests for Table schema and delete: `_create_table`, `_add_columns`, `process_data` (refs, list refs, BaseModel), `delete()` (soft vs hard), and `load()` default ordering.
+Tests for Table schema and delete: `create_table`, `add_columns`, `process_data` (refs, list refs, BaseModel), `delete()` (soft vs hard), and `load()` default ordering.
 
 ---
 

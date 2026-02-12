@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from .table import Table
 from .expressions import (
     ALIAS_SEPARATOR,
+    ArgumentedExpression,
     Expression,
     NaryOperatorExpression,
     UnaryOperatorExpression,

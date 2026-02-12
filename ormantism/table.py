@@ -122,18 +122,6 @@ class Table(metaclass=TableMeta):
                         statements.append(stmt)
         return statements
 
-    @classmethod
-    def _create_table(cls, created=None):
-        """Create the table and referenced tables if they do not exist."""
-        from . import query
-        query.create_table(cls, created)
-
-    @classmethod
-    def _add_columns(cls):
-        """Add any missing columns to the existing table (SQLite ALTER TABLE)."""
-        from . import query
-        query.add_columns(cls)
-
     def check_read_only(self, data):
         """Check we are not attempting to alter read-only fields"""
         read_only_fields = list(set(data) & set(self._READ_ONLY_FIELDS))
