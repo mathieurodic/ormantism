@@ -171,6 +171,9 @@ class TestDelete:
         assert loaded is None
         loaded_all = A.load(id=a.id, with_deleted=True)
         assert loaded_all is not None
+        assert loaded_all.id == a.id
+        assert loaded_all.name == "x"
+        assert loaded_all.deleted_at is not None
 
     def test_delete_hard(self, setup_db):
         class A(Table, with_timestamps=False):

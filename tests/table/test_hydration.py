@@ -4,6 +4,7 @@ import pytest
 
 from ormantism.table import Table
 from ormantism.expressions import ALIAS_SEPARATOR
+from tests.helpers import assert_table_instance
 
 # Docstring example (Author with one book and two kids) - single source of truth
 _DOCSTRING_UNPARSED = [
@@ -200,10 +201,11 @@ class TestIntegrateDataForHydration:
             },
         }
         instance.integrate_data_for_hydration(rearranged)
-        assert instance.id == 1
-        assert instance.name == "Alice"
-        assert instance.book is not None
-        assert instance.book.id == 10
+        expected_book = Book.make_empty_instance(10)
+        assert_table_instance(
+            instance,
+            {"id": 1, "name": "Alice", "book": expected_book},
+        )
         assert instance.book.title == "Python 101"
 
     def test_collection_reference(self, setup_db):
@@ -224,11 +226,12 @@ class TestIntegrateDataForHydration:
             },
         }
         instance.integrate_data_for_hydration(rearranged)
-        assert instance.id == 1
-        assert instance.name == "Alice"
-        assert len(instance.kids) == 2
-        assert instance.kids[0].id == 1 and instance.kids[0].x == 10
-        assert instance.kids[1].id == 2 and instance.kids[1].x == 20
+        expected_kids = [Kid.make_empty_instance(1), Kid.make_empty_instance(2)]
+        assert_table_instance(
+            instance,
+            {"id": 1, "name": "Alice", "kids": expected_kids},
+        )
+        assert instance.kids[0].x == 10 and instance.kids[1].x == 20
 
     def test_empty_collection_reference(self, setup_db):
         """Integrate empty collection ref yields empty list."""

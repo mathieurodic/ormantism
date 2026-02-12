@@ -189,3 +189,44 @@ class TestTableLazyReadonly:
         created = getattr(a, "created_at")
         assert created is not None
         assert "created_at" in a.__dict__  # now cached
+
+
+class TestColumnsAfterQueries:
+    """Regression: class and instance column attributes still work correctly after running queries."""
+
+    def test_cls_id_unchanged_after_query(self, setup_db):
+        """cls.id remains a ColumnExpression after iterating a query."""
+        from ormantism.expressions import ColumnExpression
+
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="x")
+        list(A.q().where(A.name == "x"))
+        assert isinstance(A.id, ColumnExpression)
+        assert A.id.name == "id"
+
+    def test_instance_id_unchanged_after_query(self, setup_db):
+        """Yielded instances have correct instance.id (int), not ColumnExpression."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        A(name="a1")
+        A(name="a2")
+        rows = list(A.q())
+        for a in rows:
+            assert isinstance(a.id, int)
+            assert a.name in ("a1", "a2")
+
+    def test_hash_and_eq_work_after_hydration(self, setup_db):
+        """instance.id works for hashing and comparison after hydration."""
+        class A(Table, with_timestamps=True):
+            name: str = ""
+
+        a1 = A(name="x")
+        rows = list(A.q().where(A.id == a1.id))
+        assert len(rows) == 1
+        loaded = rows[0]
+        assert hash(loaded) == hash(a1)
+        assert loaded == a1
+        assert loaded in {a1}

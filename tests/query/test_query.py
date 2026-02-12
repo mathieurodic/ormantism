@@ -2,6 +2,7 @@
 
 import pytest
 from ormantism.table import Table
+from tests.helpers import assert_table_instance
 from ormantism.query import (
     Query,
     ALIAS_SEPARATOR,
@@ -94,7 +95,7 @@ class TestQuerySelect:
             value: int = 0
 
         A(name="x", value=1)
-        q = Query(table=A).select(A.pk, A.name, A.value)
+        q = Query(table=A).select(A.id, A.name, A.value)
         rows = list(q)
         assert len(rows) == 1
         assert rows[0].id == 1
@@ -110,7 +111,7 @@ class TestQuerySelect:
 
         b = B()
         C(links_to=b)
-        q = Query(table=C).select(C.pk, C.links_to).where(C.links_to == b)
+        q = Query(table=C).select(C.id, C.links_to).where(C.links_to == b)
         rows = list(q)
         assert len(rows) >= 1
         assert rows[0].links_to is not None
@@ -125,7 +126,7 @@ class TestQueryWhere:
             name: str = ""
 
         a = A(name="unique")
-        q = Query(table=A).where(A.pk == _pk(a))
+        q = Query(table=A).where(A.id == _pk(a))
         row = q.first()
         assert row is not None
         assert row.id == a.id
@@ -218,10 +219,15 @@ class TestQueryWhereKwargsAndFilter:
             book: B | None = None
 
         b = B(title="Python")
-        A(book=b)
+        a = A(book=b)
         q = Query(table=A).where(book__title__contains="Py")
         row = q.first()
         assert row is not None
+        assert_table_instance(
+            row,
+            {"id": a.id, "book": b},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
         assert row.book.title == "Python"
 
     def test_where_iexact(self, setup_db):
@@ -266,11 +272,21 @@ class TestQueryWhereKwargsAndFilter:
             book: B | None = None
 
         b = B(title="x")
-        A(book=b)
+        a = A(book=b)
         row = Query(table=A).where(book=b).first()
-        assert row is not None and row.book is not None and row.book.id == b.id
+        assert row is not None
+        assert_table_instance(
+            row,
+            {"id": a.id, "book": b},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
         row2 = Query(table=A).where(book__exact=b.id).first()
-        assert row2 is not None and row2.book is not None
+        assert row2 is not None
+        assert_table_instance(
+            row2,
+            {"id": a.id, "book": b},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
 
     def test_where_relation_isnull(self, setup_db):
         """relation__isnull uses TableExpression._isnull (FK column IS NULL / IS NOT NULL)."""
@@ -359,6 +375,7 @@ class TestQueryWhereExpressionStyleNested:
         assert rows_sorted[1].book.id == b3.id
         assert rows_sorted[1].book.title == "The Art of SQL"
 
+        # Query preloads book via JOIN; no lazy load when accessing row.book.
         expect_lazy_loads.expect(0)
 
     def test_where_nested_icontains_no_match_returns_empty(self, setup_db):
@@ -424,7 +441,7 @@ class TestQueryOrderAndLimit:
 
         A(name="first")
         A(name="second")
-        q = Query(table=A).order_by(A.pk.desc).limit(2)
+        q = Query(table=A).order_by(A.id.desc).limit(2)
         rows = list(q)
         ids = [r.id for r in rows]
         assert ids == sorted(ids, reverse=True)
@@ -441,7 +458,7 @@ class TestQueryOrderAndLimit:
         A(book=b1)
         A(book=b2)
         # Order by the related table expression (resolves to book.id)
-        q = Query(table=A).select(A.pk, A.book).order_by(A.book).limit(5)
+        q = Query(table=A).select(A.id, A.book).order_by(A.book).limit(5)
         rows = list(q)
         assert len(rows) == 2
         assert [r.id for r in rows] == [1, 2]
@@ -502,10 +519,10 @@ class TestQueryIncludeDeleted:
         a = A(name="x")
         a.delete()
         # Default: not found
-        q_default = Query(table=A).where(A.pk == _pk(a))
+        q_default = Query(table=A).where(A.id == _pk(a))
         assert q_default.first() is None
         # With include_deleted: found
-        q_with = Query(table=A).include_deleted().where(A.pk == _pk(a))
+        q_with = Query(table=A).include_deleted().where(A.id == _pk(a))
         found = q_with.first()
         assert found is not None
         assert found.id == a.id
@@ -551,9 +568,9 @@ class TestQueryAllGetFirst:
             name: str = ""
 
         a = A(name="only")
-        q = Query(table=A).where(A.pk == _pk(a))
+        q = Query(table=A).where(A.id == _pk(a))
         assert q.first() is not None
-        q_none = Query(table=A).where(A.pk == 999999)
+        q_none = Query(table=A).where(A.id == 999999)
         assert q_none.first() is None
 
     def test_get_returns_first(self, setup_db):
@@ -561,7 +578,7 @@ class TestQueryAllGetFirst:
             name: str = ""
 
         a = A(name="g")
-        q = Query(table=A).where(A.pk == _pk(a))
+        q = Query(table=A).where(A.id == _pk(a))
         row = q.first()
         assert row is not None
         assert row.id == a.id
@@ -570,7 +587,7 @@ class TestQueryAllGetFirst:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        q = Query(table=A).where(A.pk == 999999)
+        q = Query(table=A).where(A.id == 999999)
         with pytest.raises(ValueError, match="no results"):
             q.get_one()
 
@@ -589,7 +606,7 @@ class TestQueryAllGetFirst:
             name: str = ""
 
         a = A(name="single")
-        q = Query(table=A).where(A.pk == _pk(a))
+        q = Query(table=A).where(A.id == _pk(a))
         row = q.get_one()
         assert row is not None
         assert row.id == a.id
@@ -616,7 +633,7 @@ class TestQueryAllGetFirst:
             name: str = ""
 
         a = A(name="y")
-        row = Query(table=A).get(A.pk == _pk(a))
+        row = Query(table=A).get(A.id == _pk(a))
         assert row is not None
         assert row.id == a.id
 
@@ -1060,7 +1077,7 @@ class TestQueryOffset:
 
         for i in range(5):
             A(name=f"n{i}")
-        q = Query(table=A).order_by(A.pk).limit(2).offset(1)
+        q = Query(table=A).order_by(A.id).limit(2).offset(1)
         rows = list(q)
         assert len(rows) == 2
         # ORDER BY id ASC, OFFSET 1 LIMIT 2 -> ids 2 and 3
@@ -1221,7 +1238,7 @@ class TestHydrationFromRowDict:
             name: str = ""
 
         A(name="x")
-        q = Query(table=A).select(A.pk, A.name)
+        q = Query(table=A).select(A.id, A.name)
         rows = list(q)
         assert len(rows) == 1
         assert rows[0].id == 1
@@ -1248,14 +1265,16 @@ class TestHydrationFromRowDict:
         assert p.id == 1
         loaded = Parent.load(id=p.id)
         assert loaded is not None
-        assert loaded.id == 1
         kids = loaded.kids
-        assert len(kids) == 2
-        ids = sorted(k.id for k in kids)
-        assert ids == [1, 2]
+        assert_table_instance(
+            loaded,
+            {"id": 1, "kids": [c1, c2]},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
         vals = sorted(k.x for k in kids)
         assert vals == [10, 20]
-        expect_lazy_loads.expect(1)
+        # kids comes from row (list ref as JSON); no lazy load when accessing it.
+        expect_lazy_loads.expect(0)
 
     @pytest.mark.skip(reason="preload for list refs in load() not yet supported (join column naming)")
     def test_preload_list_ref_avoids_lazy(self, setup_db, expect_lazy_loads):
@@ -1286,7 +1305,7 @@ class TestHydrationFromRowDict:
 
         a = A(book=None)
         assert a.id == 1
-        q = Query(table=A).select(A.pk, A.book).where(A.pk == 1)
+        q = Query(table=A).select(A.id, A.book).where(A.id == 1)
         row = q.first()
         assert row is not None
         assert row.id == 1
@@ -1338,7 +1357,7 @@ class TestOrderByTypeError:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        q = Query(table=A).select(A.pk, A.book).order_by(A.book).limit(2)
+        q = Query(table=A).select(A.id, A.book).order_by(A.book).limit(2)
         sql = q.sql
         assert "ORDER BY" in sql
         assert "book" in sql or "id" in sql
@@ -1382,7 +1401,7 @@ class TestUpdateAndDeleteInstanceCoverage:
         assert a.id == 1
         a.delete()
         assert Query(table=A).first() is None
-        found = Query(table=A).include_deleted().where(A.pk == 1).first()
+        found = Query(table=A).include_deleted().where(A.id == 1).first()
         assert found is not None
         assert found.id == 1
 
@@ -1537,7 +1556,7 @@ class TestUpdateAndDeleteInstanceDirect:
         assert s.id == 1
         Query(table=Soft).where(id=s.id).delete()
         assert Query(table=Soft).first() is None
-        assert Query(table=Soft).include_deleted().where(Soft.pk == 1).first().id == 1
+        assert Query(table=Soft).include_deleted().where(Soft.id == 1).first().id == 1
 
         h = Hard(name="h")
         assert h.id == 1
@@ -1584,7 +1603,7 @@ class TestPolymorphicRefAndJoinCoverage:
         class A(Table, with_timestamps=True):
             book: B | None = None
 
-        q = Query(table=A).select(A.pk, A.book.title)
+        q = Query(table=A).select(A.id, A.book.title)
         sql = q.sql
         assert "LEFT JOIN" in sql
         assert "book" in sql.lower()
@@ -1621,7 +1640,7 @@ class TestPolymorphicRefAndJoinCoverage:
 
         Query(table=A).ensure_table_structure()
         Query(table=B).ensure_table_structure()
-        q = Query(table=A).select(A.pk)
+        q = Query(table=A).select(A.id)
         sql = q.sql
         assert "a.items" in sql
 

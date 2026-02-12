@@ -138,7 +138,7 @@ class TableExpression(Expression):
         t = self.table
         if getattr(t, "__name__", None) == "Table" and getattr(t, "__module__", None) == "ormantism.table":
             raise ValueError(
-                "Expressions must use a concrete Table subclass (e.g. MyModel.pk, MyModel.name), "
+                "Expressions must use a concrete Table subclass (e.g. MyModel.id, MyModel.name), "
                 "not the base Table class."
             )
         return t._get_table_name()

@@ -68,15 +68,13 @@ class TableMeta(ModelMetaclass):
         for fname, info in result.model_fields.items():
             col = Column.from_pydantic_info(result, fname, info)
             result._columns[fname] = col
-        # Class-level attribute per column/relationship for query building (e.g. User.name, User.books).
-        # Skip read-only fields (id, created_at, etc.) so instance.id returns the stored value, not an expression.
+        # Class-level ColumnExpression per column for query building (e.g. User.name, User.book, User.id).
+        # Read-only columns (id, created_at, etc.) are included too; Pydantic may use them as defaults,
+        # so instance.__dict__ can end up with a ColumnExpression. Table.__getattribute__ treats that
+        # as "not loaded" and returns None (for id) or triggers lazy load (for others).
         root = TableExpression(table=result, parent=None, path=())
         for fname in result._columns:
-            if fname in result._READ_ONLY_COLUMNS:
-                continue
             setattr(result, fname, root[fname])
-        # Class-level pk expression for query building (e.g. A.pk == 1), without shadowing instance.id.
-        setattr(result, "pk", root["id"])
         # Root table expression for select(Model._expression) and helpers that take a TableExpression.
         setattr(result, "_expression", root)
         # Connection descriptor (set here so Pydantic does not treat _connection as a private attr).

@@ -146,15 +146,15 @@ class TestLoadOrCreate:
         assert c2.link is not None and c2.link.id == b2.id
 
     def test_load_or_create_returns_new_instance_when_on_conflict_empty(self, setup_db):
-        """load_or_create when no keys in on_conflict returns cls(**data) without upsert (line 202)."""
+        """load_or_create when no keys in on_conflict returns cls(**data) without upsert."""
         class A(Table, with_timestamps=True):
             name: str = ""
             tag: str = ""
 
         a = A.load_or_create(_search_fields=("name",), name="x", tag="t1")
         assert a.id is not None
-        # Second call with same name but different _search_fields that yields empty on_conflict
-        a2 = A.load_or_create(_search_fields=("id",), name="y", tag="t2")
+        # _search_fields=() yields empty on_conflict, so we create (no upsert)
+        a2 = A.load_or_create(_search_fields=(), name="y", tag="t2")
         assert a2.id != a.id
         assert a2.name == "y"
 
@@ -173,10 +173,13 @@ class TestLoadOrCreate:
         b1 = B1(tag="one")
         b2 = B2(tag="two")
         p = Poly(key="k", ref=b1)
-        # Load without preload so ref is lazy (ref in __dict__ with raw JSON, loads on access)
+        # Load without preload so ref is lazy (skeleton instance or raw JSON)
         loaded = Poly.load(key="k")
         assert "ref" in loaded.__dict__
-        assert loaded.__dict__["ref"] == {"table": "b1", "id": 1}
+        ref_val = loaded.__dict__["ref"]
+        assert ref_val is not None
+        assert hasattr(ref_val, "id") and ref_val.id == 1
+        assert ref_val._get_table_name() == "b1"
         # Update via load_or_create with same-type ref but different id (hits 94-95)
         b1_other = B1(tag="other")
         p2 = Poly.load_or_create(_search_fields=("key",), key="k", ref=b1_other)

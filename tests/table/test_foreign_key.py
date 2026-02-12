@@ -5,6 +5,7 @@ from typing import Optional
 import pytest
 from pydantic import Field
 from ormantism import Table
+from tests.helpers import assert_table_instance
 
 
 def test_specific_foreign_key(setup_db, expect_lazy_loads):
@@ -28,11 +29,12 @@ def test_specific_foreign_key(setup_db, expect_lazy_loads):
         assert parent.parent.id == grandparent.id
         child = Node.load(name="child", preload=preload)
         assert child.parent.id == parent.id
-    # First iteration (no preload) triggers 2 lazy loads (parent.parent, child.parent); second (preload) triggers 0.
-    expect_lazy_loads.expect(2)
+    # Lazy load count: first iteration (preload=[]) loads root cols; parent/child refs get
+    # skeletons from FK. Second iteration (preload=["parent"]) joins parent. In both cases the
+    # root FK (e.g. grandparent.parent=None) is preserved when join returns NULL, so no lazy loads.
+    expect_lazy_loads.expect(0)
 
 
-@pytest.mark.xfail(reason="load(id=..., preload=[...]) joins but hydration expects nested data; flat row not converted")
 def test_specific_foreign_key_preload_avoids_lazy(setup_db, expect_lazy_loads):
     """When preloading by id, accessing the relationship must not trigger lazy load."""
     class Node(Table):
@@ -76,10 +78,10 @@ def test_generic_foreign_key(setup_db):
         pointer1 = Ptr.load(ref=ref1, preload="ref")
 
     pointer1 = Ptr.load(ref=ref1)
-    assert pointer1.ref.id == ref1.id
+    assert_table_instance(pointer1, {"id": pointer1.id, "ref": ref1})
     assert pointer1.ref.__class__ == Ref1
     pointer2 = Ptr.load(ref=ref2)
-    assert pointer2.ref.id == ref2.id
+    assert_table_instance(pointer2, {"id": pointer2.id, "ref": ref2})
     assert pointer2.ref.__class__ == Ref2
 
     # update
@@ -90,7 +92,7 @@ def test_generic_foreign_key(setup_db):
     # retrieval
 
     pointer2 = Ptr.load(id=pointer2_id)
-    assert pointer2.ref.id == ref1.id
+    assert_table_instance(pointer2, {"id": pointer2_id, "ref": ref1})
     assert pointer2.ref.__class__ == Ref1
 
 
@@ -113,7 +115,9 @@ def test_specific_foreign_key_list(setup_db, expect_lazy_loads):
     assert isinstance(n3.children, list)
     assert len(n3.children) == 2
     assert isinstance(n3.children[0], Parent)
-    expect_lazy_loads.expect(1)
+    assert_table_instance(n3, {"id": n3.id, "name": "node3", "children": [n1, n2]})
+    # kids comes from row (list ref stored as JSON); no lazy load when accessing it.
+    expect_lazy_loads.expect(0)
 
 
 @pytest.mark.skip(reason="preload for list refs in load() not yet supported (join column naming)")
@@ -199,7 +203,7 @@ class TestLazyRefCoverage:
 
         b = B(title="x")
         a = A(book=b)
-        loaded = A.q().select(A.pk).where(A.pk == a.id).first()
+        loaded = A.q().select(A.id).where(A.id == a.id).first()
         assert loaded is not None
         with pytest.raises(AttributeError, match="_"):
             _ = loaded.book._private_thing  # loads book, then raises for nonexistent _private_thing
@@ -215,7 +219,7 @@ class TestLazyRefCoverage:
         c1 = Child(x=1)
         c2 = Child(x=2)
         p = Parent(kids=[c1, c2])
-        loaded = Parent.q().select(Parent.pk).where(Parent.pk == p.id).first()
+        loaded = Parent.q().select(Parent.id).where(Parent.id == p.id).first()
         assert loaded is not None
         assert c1 in loaded.kids
         assert bool(loaded.kids) is True

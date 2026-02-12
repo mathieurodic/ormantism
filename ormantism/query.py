@@ -658,7 +658,7 @@ class Query(BaseModel):
         """
         if len(statements) == 1 and not isinstance(statements[0], Expression):
             pk_value = statements[0]
-            rows = self.where(self.table.pk == pk_value).all(limit=1)
+            rows = self.where(self.table.id == pk_value).all(limit=1)
         else:
             rows = self.where(*statements, **kwargs).all(limit=1)
         return rows[0] if rows else None
@@ -674,7 +674,7 @@ class Query(BaseModel):
         """
         if len(statements) == 1 and not isinstance(statements[0], Expression):
             pk_value = statements[0]
-            rows = self.where(self.table.pk == pk_value).all(limit=2)
+            rows = self.where(self.table.id == pk_value).all(limit=2)
         else:
             rows = self.where(*statements, **kwargs).all(limit=2)
         if len(rows) == 0:
@@ -819,6 +819,11 @@ class Query(BaseModel):
             else:
                 formatted_data[name] = value
 
+        for name in processed_data:
+            col = cls._get_columns().get(name)
+            if col is not None and col.is_reference:
+                formatted_data[name] = processed_data[name]
+
         for name, field in cls._get_columns().items():
             if name not in include or name in exclude or field.is_reference:
                 continue
@@ -830,18 +835,28 @@ class Query(BaseModel):
 
         if formatted_data:
             tbl = cls._get_table_name()
+            returning_cols = ["id"]
+            if "created_at" in cls._get_columns() and "created_at" not in formatted_data:
+                returning_cols.append("created_at")
             sql = (
                 f"INSERT INTO {tbl} ({', '.join(formatted_data.keys())})\n"
                 f"VALUES ({', '.join('?' for _ in formatted_data.values())})\n"
-                "RETURNING id"
+                f"RETURNING {', '.join(returning_cols)}"
             )
             rows = self.execute(sql, list(formatted_data.values()), ensure_structure=True)
         else:
             tbl = cls._get_table_name()
-            sql = f"INSERT INTO {tbl} DEFAULT VALUES\nRETURNING id"
+            returning_cols = ["id"]
+            if "created_at" in cls._get_columns():
+                returning_cols.append("created_at")
+            sql = f"INSERT INTO {tbl} DEFAULT VALUES\nRETURNING {', '.join(returning_cols)}"
             rows = self.execute(sql, [], ensure_structure=True)
+        row = rows[0]
         id_field = cls._get_column("id")
-        object.__setattr__(instance, "id", id_field.parse(rows[0][0]))
+        object.__setattr__(instance, "id", id_field.parse(row[0]))
+        if len(returning_cols) > 1:
+            created_at_field = cls._get_column("created_at")
+            object.__setattr__(instance, "created_at", created_at_field.parse(row[1]))
 
         for name, field in cls._get_columns().items():
             if (

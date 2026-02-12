@@ -9,7 +9,7 @@ from functools import cache
 from pydantic import BaseModel
 
 from .utils.make_hashable import make_hashable
-from .expressions import ALIAS_SEPARATOR
+from .expressions import ALIAS_SEPARATOR, ColumnExpression
 from .column import Column
 from .table_meta import TableMeta
 
@@ -46,6 +46,16 @@ class Table(metaclass=TableMeta):
 
     def _load(self, names: tuple[str, ...]):
         """Load a value from the database for a given column name, using the current instance's identifier."""
+        for name in names:
+            col = type(self)._get_columns().get(name)
+            if col is not None and col.is_reference:
+                warnings.warn(
+                    f"Lazy loading '{name}' on {type(self).__name__}: consider preloading "
+                    f"(e.g. Model.q().select(Model.{name}).where(...))",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                break
         rows = self.q().select(*names).where(id=self.id).rows(as_dicts=True)
         if not rows:
             return
@@ -69,7 +79,15 @@ class Table(metaclass=TableMeta):
             return object.__getattribute__(self, name)
 
         if name in d:
-            return d[name]
+            val = d[name]
+            # Pydantic may use cls.id etc. as defaults, so __dict__ can hold a ColumnExpression.
+            # Treat that as "not loaded": return None for id, lazy-load others.
+            if isinstance(val, ColumnExpression):
+                if name == "id":
+                    return None
+                self._load((name,))
+                return d.get(name)
+            return val
 
         self._load((name,))
         return d.get(name)
@@ -194,11 +212,20 @@ class Table(metaclass=TableMeta):
         deep_defaultdict = lambda: defaultdict(deep_defaultdict)
         rearranged_data = deep_defaultdict()
         for unparsed_row in unparsed_data:
-            # Strip redundant FK columns when the reference is already joined
+            # Strip redundant FK columns when the reference is already joined and has data.
+            # Keep the root FK when the joined row's id is None (LEFT JOIN with no match).
             keys = set(unparsed_row.keys())
+
+            def should_strip(k: str) -> bool:
+                joined_id_key = f"{k}{ALIAS_SEPARATOR}id"
+                if joined_id_key not in keys:
+                    return False
+                # Only strip when joined row has actual data; keep FK when join returned NULL
+                return unparsed_row.get(joined_id_key) is not None
+
             unparsed_row = {
                 k: v for k, v in unparsed_row.items()
-                if f"{k}{ALIAS_SEPARATOR}id" not in keys
+                if not (ALIAS_SEPARATOR not in k and should_strip(k))
             }
             data_per_table = deep_defaultdict()
             for alias, value in unparsed_row.items():
@@ -295,6 +322,9 @@ class Table(metaclass=TableMeta):
             else:
                 value = column.parse(value)
             self.__dict__[key] = value
+        for key, column in table._get_columns().items():
+            if key not in values and column.is_reference and column.secondary_type is not None:
+                self.__dict__[key] = []
 
     def hydrate_with(self, unparsed_data: list[dict[str, Any]]) -> None:
         """Hydrate a Table instance from a row dict mapping column alias to unparsed value."""

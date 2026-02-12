@@ -2,6 +2,7 @@
 
 import pytest
 from ormantism.table import Table
+from tests.helpers import assert_table_instance
 
 
 class TestBasicTableOperations:
@@ -54,8 +55,11 @@ class TestTableRelationships:
         assert b.id is not None
         assert b.created_at is not None
 
-        c = C(links_to = b)
-        assert c.links_to.id == b.id
+        c = C(links_to=b)
+        assert_table_instance(
+            c,
+            {"id": c.id, "links_to": b, "created_at": c.created_at, "updated_at": c.updated_at, "deleted_at": c.deleted_at},
+        )
 
 
 class TestLazyLoading:
@@ -73,11 +77,11 @@ class TestLazyLoading:
 
         loaded_c = C.load(id=c.id, preload="links_to")
         assert loaded_c is not None
-        assert loaded_c.id == c.id
-
-        linked_b = loaded_c.links_to
-        if linked_b:
-            assert linked_b.id == b.id
+        assert_table_instance(
+            loaded_c,
+            {"id": c.id, "links_to": b},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
         expect_lazy_loads.expect(0)
 
     def test_load_on_access(self, setup_db, expect_lazy_loads):
@@ -92,14 +96,17 @@ class TestLazyLoading:
 
         loaded_c = C.load(id=c.id)
         assert loaded_c is not None
-        assert loaded_c.id == c.id
-
+        assert_table_instance(
+            loaded_c,
+            {"id": c.id, "links_to": b},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
         first_access = loaded_c.links_to
         second_access = loaded_c.links_to
-
         if first_access is not None:
             assert second_access.id == first_access.id
-        expect_lazy_loads.expect(1)
+        # links_to gets skeleton from initial hydration (FK id in row); no lazy load on access.
+        expect_lazy_loads.expect(0)
 
 
 class TestCompanyEmployeeExample:
@@ -119,14 +126,26 @@ class TestCompanyEmployeeExample:
         e2 = Employee(name="Bob", company=c1)
         e3 = Employee(name="Carol", company=c2)
 
-        assert e1.company.id == c1.id
-        assert e3.company.id == c2.id
+        assert_table_instance(
+            e1,
+            {"id": e1.id, "name": "Alice", "company": c1},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
+        assert_table_instance(
+            e3,
+            {"id": e3.id, "name": "Carol", "company": c2},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
 
         c5 = Company(name="Initech")
         c5.name += " II"
         loaded = Company.load(id=c5.id)
         assert loaded is not None
-        assert " II" in loaded.name
+        assert_table_instance(
+            loaded,
+            {"id": c5.id, "name": "Initech II"},
+            exclude={"created_at", "updated_at", "deleted_at"},
+        )
 
 
 class TestVersioning:

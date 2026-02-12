@@ -263,6 +263,8 @@ class Column(BaseModel):
     def parse(self, value: Any) -> Any:
         """Convert a database value back to the column's Python type."""
         if value is None:
+            if self.is_reference and self.secondary_type is not None:
+                return []
             return None
         if self.is_reference:
             if self._is_polymorphic_ref:

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from ormantism.table import Table
+from tests.helpers import assert_table_instance
 from ormantism.query import Query
 from ormantism.column import Column
 from ormantism.expressions import ALIAS_SEPARATOR
@@ -100,13 +101,15 @@ def test_list_reference_lazy_path(setup_db, expect_lazy_loads):
     parent = Parent(kids=[c1, c2])
     loaded = Parent.load(id=parent.id)
     assert loaded is not None
-    kids = loaded.kids  # triggers lazy load
-    assert "kids" in loaded.__dict__
-    kids_list = loaded.__dict__["kids"]
-    assert len(kids_list) == 2
-    assert kids_list[0].id == c1.id and kids_list[1].id == c2.id
+    kids = loaded.kids
+    assert_table_instance(
+        loaded,
+        {"id": parent.id, "kids": [c1, c2]},
+        exclude={"created_at", "updated_at", "deleted_at"},
+    )
     assert len(kids) == 2
-    expect_lazy_loads.expect(1)
+    # kids in row (list ref); no lazy load on access.
+    expect_lazy_loads.expect(0)
 
 
 def test_lazy_list_ref_proxy_contains_bool_reversed(setup_db):
