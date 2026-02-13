@@ -63,13 +63,13 @@ class TestMixinAttributes:
     """Mixin classes provide expected attributes and TABLE_SQL_CREATIONS."""
 
     def test_with_primary_key_has_table_sql_creations(self):
-        from ormantism.table_mixins import _WithPrimaryKey
+        from ormantism.table import _WithPrimaryKey
 
         assert hasattr(_WithPrimaryKey, "TABLE_SQL_CREATIONS")
         assert "id" in str(_WithPrimaryKey.TABLE_SQL_CREATIONS)
 
     def test_with_created_at_timestamp_has_table_sql_creations(self):
-        from ormantism.table_mixins import _WithCreatedAtTimestamp
+        from ormantism.table import _WithCreatedAtTimestamp
 
         assert hasattr(_WithCreatedAtTimestamp, "TABLE_SQL_CREATIONS")
         assert "created_at" in str(_WithCreatedAtTimestamp.TABLE_SQL_CREATIONS)

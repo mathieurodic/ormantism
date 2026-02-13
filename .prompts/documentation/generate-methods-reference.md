@@ -7,8 +7,8 @@ Please update (or generate) `REFERENCE.md` in the project's `ormantism` director
 
 ### Methods
 
-| method path | defined at | used at |
-|-------------|------------|---------|
+| method path | description | defined at | used at |
+|-------------|-------------|------------|---------|
 ```
 
 If it exists, keep the rest of file (what is not under `### Methods` in the hierarchy described above) intact.
@@ -16,6 +16,7 @@ If it exists, keep the rest of file (what is not under `### Methods` in the hier
 Only reference methods that are directly available under a module or class (available at module-level).
 
 * `method path` is the path of the method, including module (and class, if applies)
+* `description` is a brief one-line summary of what the method does (from docstring when available)
 * `defined at` is where the method is defined (FILENAME:LINE).
 * `used at` is a newline-separated list (no bullet points) of places where the method is called (FILENAME:LINE)
 

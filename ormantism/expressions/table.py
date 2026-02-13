@@ -136,7 +136,8 @@ class TableExpression(Expression):
         if self.parent:
             return f"{self.parent.sql_alias}{ALIAS_SEPARATOR}{self.path[-1]}"
         t = self.table
-        if getattr(t, "__name__", None) == "Table" and getattr(t, "__module__", None) == "ormantism.table":
+        mod = getattr(t, "__module__", None)
+        if getattr(t, "__name__", None) == "Table" and mod in ("ormantism.table", "ormantism.table.base"):
             raise ValueError(
                 "Expressions must use a concrete Table subclass (e.g. MyModel.id, MyModel.name), "
                 "not the base Table class."

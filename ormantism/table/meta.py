@@ -2,11 +2,11 @@
 
 from pydantic._internal._model_construction import ModelMetaclass
 
-from .column import Column
-from .connection import _ConnectionDescriptor
-from .expressions import TableExpression
-from .utils.supermodel import SuperModel
-from .table_mixins import (
+from ..column import Column
+from ..connection import _ConnectionDescriptor
+from ..expressions import TableExpression
+from ..utils.supermodel import SuperModel
+from .mixins import (
     _WithPrimaryKey,
     _WithCreatedAtTimestamp,
     _WithUpdatedAtTimestamp,
@@ -16,12 +16,7 @@ from .table_mixins import (
 
 
 class TableMeta(ModelMetaclass):
-    """Metaclass for Table: injects mixins and attaches Column instances to the class.
-
-    After Pydantic builds the model, each model_fields entry becomes a Column
-    stored both as a class attribute (TableSubClass.field_name = column) and
-    in TableSubClass._columns (same objects).
-    """
+    """Metaclass for Table: injects mixins and attaches Column instances to the class."""
 
     def __new__(mcs, name, bases, namespace,
                 with_primary_key: bool = True,
@@ -31,7 +26,6 @@ class TableMeta(ModelMetaclass):
                 versioning_along: tuple[str] = None,
                 connection_name: str = None,
                 **kwargs):
-        # inherited behaviors
         default_bases: tuple[type[SuperModel]] = tuple()
         if with_primary_key:
             default_bases += (_WithPrimaryKey,)
@@ -43,40 +37,29 @@ class TableMeta(ModelMetaclass):
             default_bases += (_WithTimestamps,)
         if versioning_along:
             default_bases += (_WithVersion,)
-        # start building result
         result = super().__new__(
             mcs, name, bases + default_bases, namespace, **kwargs
         )
-        # connection name
         if not connection_name:
             for base in bases:
-                if base._CONNECTION_NAME:
-                    connection_name = base._CONNECTION_NAME
+                cn = getattr(base, "_CONNECTION_NAME", None)
+                if cn:
+                    connection_name = cn
         result._CONNECTION_NAME = connection_name
-        # versioning
         if versioning_along is None:
             for base in bases:
                 if getattr(base, "_VERSIONING_ALONG", None):
                     versioning_along = base._VERSIONING_ALONG
         result._VERSIONING_ALONG = versioning_along
-        # read-only
         result._READ_ONLY_COLUMNS = sum((tuple(base.model_fields.keys())
                                         for base in default_bases), start=())
-        # Column instances: stored in _columns only (not as class attrs) so Pydantic
-        # does not copy the descriptor into instance.__dict__; same objects in result._columns.
         result._columns = {}
         for fname, info in result.model_fields.items():
             col = Column.from_pydantic_info(result, fname, info)
             result._columns[fname] = col
-        # Class-level ColumnExpression per column for query building (e.g. User.name, User.book, User.id).
-        # Read-only columns (id, created_at, etc.) are included too; Pydantic may use them as defaults,
-        # so instance.__dict__ can end up with a ColumnExpression. Table.__getattribute__ treats that
-        # as "not loaded" and returns None (for id) or triggers lazy load (for others).
         root = TableExpression(table=result, parent=None, path=())
         for fname in result._columns:
             setattr(result, fname, root[fname])
-        # Root table expression for select(Model._expression) and helpers that take a TableExpression.
         setattr(result, "_expression", root)
-        # Connection descriptor (set here so Pydantic does not treat _connection as a private attr).
         setattr(result, "_connection", _ConnectionDescriptor())
         return result

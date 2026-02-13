@@ -23,10 +23,8 @@ from .utils.get_base_type import get_base_type
 from .utils.get_table_by_name import get_table_by_name
 from .utils.resolve_type import resolve_type
 from .utils.is_table import is_table, is_polymorphic_table
-from .utils.rebuild_pydantic_model import rebuild_pydantic_model
+from .utils.schema import rebuild_pydantic_model, serialize, to_json_schema, from_json_schema
 from .utils.make_hashable import make_hashable
-from .utils.supermodel import to_json_schema, from_json_schema
-from .utils.serialize import serialize
 
 
 # Type alias for JSON-serializable values

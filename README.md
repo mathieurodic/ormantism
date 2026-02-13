@@ -349,7 +349,7 @@ User.q().include_deleted().all()
 
 ## Code reference
 
-For a full **code reference** (classes and methods with file/line and usages), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**.
+For a full **code reference** (classes and methods with descriptions, file/line, and usages), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**.
 
 ---
 

@@ -124,6 +124,10 @@ Tests for `ormantism.table`: Table CRUD, schema, lifecycle, and relationships.
 
 Tests for Table foreign key fields: specific refs, generic (polymorphic) refs, list refs, and preload vs lazy loading behaviour.
 
+### table/test_hydration.py
+
+Tests for Table hydration: `rearrange_data_for_hydration`, `integrate_data_for_hydration`, `make_empty_instance`, and instance building from joined rows.
+
 ### table/test_table_crud_and_relationships.py
 
 Tests for Table CRUD, timestamps, relationships, lazy loading, and versioning: basic create/load, refs, and versioned tables.
@@ -143,6 +147,10 @@ Tests for Table metadata and equality: `_get_columns`, `_get_table_name`, `_get_
 ### table/test_table_schema_and_delete.py
 
 Tests for Table schema and delete: `create_table`, `add_columns`, `process_data` (refs, list refs, BaseModel), `delete()` (soft vs hard), and `load()` default ordering.
+
+### table/test_timestamps.py
+
+Tests for created_at, updated_at, and deleted_at timestamps on Table instances: set on insert, update on save, and soft-delete behaviour.
 
 ---
 
@@ -168,6 +176,10 @@ Tests for `ormantism.utils.find_subclass` and `_get_subclasses`: finding a subcl
 
 Tests for `ormantism.utils.get_base_type` and `get_container_base_type`: resolving the base type from annotations and containers.
 
+### utils/test_is_table.py
+
+Tests for `ormantism.utils.is_table` and `is_polymorphic_table`: detecting Table subclasses vs non-table types.
+
 ### utils/test_is_type_annotation.py
 
 Tests for `ormantism.utils.is_type_annotation`: detecting type annotations (bare types, Optional, Union, etc.).
@@ -184,7 +196,7 @@ Tests for `ormantism.utils.rebuild_pydantic_model`: `get_field_type` and `rebuil
 
 Tests for `ormantism.utils.resolve_type`: resolving forward references to Table subclasses.
 
-### utils/test_serialize.py
+### utils/test_utils_serialize.py
 
 Tests for `ormantism.utils.serialize`: recursive serialization of nested structures to JSON-serializable types.
 

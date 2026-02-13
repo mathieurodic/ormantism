@@ -2,7 +2,7 @@
 
 import pytest
 from pydantic import BaseModel
-from ormantism.utils.rebuild_pydantic_model import (
+from ormantism.utils.schema import (
     get_field_type,
     rebuild_pydantic_model,
 )

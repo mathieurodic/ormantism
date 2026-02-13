@@ -5,7 +5,7 @@ import enum
 import pytest
 from pydantic import BaseModel
 
-from ormantism.utils.serialize import serialize
+from ormantism.utils.schema import serialize
 
 
 def test_serialize_base_model():

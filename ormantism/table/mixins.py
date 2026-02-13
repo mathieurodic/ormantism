@@ -3,14 +3,13 @@
 import datetime
 from typing import ClassVar
 
-from .utils.supermodel import SuperModel
+from ..utils.supermodel import SuperModel
 
 
 class _WithPrimaryKey(SuperModel):
     """Mixin that adds an auto-increment integer primary key `id`."""
 
     id: int = None
-    # SQL fragment(s) for CREATE TABLE; collected by Table._get_table_sql_creations()
     TABLE_SQL_CREATIONS: ClassVar[list[str]] = [
         "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT"
     ]

@@ -16,7 +16,7 @@ from typing import Any, Optional, Iterable
 
 from pydantic import BaseModel, Field
 
-from .table import Table
+from .table import Table, create_table, add_columns
 from .expressions import (
     ALIAS_SEPARATOR,
     ArgumentedExpression,
@@ -54,7 +54,7 @@ _WHERE_LOOKUP_MAP: dict[str, str] = {
     "like": "like",
     "ilike": "ilike",
 }
-from .table_mixins import (
+from .table import (
     _WithSoftDelete,
     _WithCreatedAtTimestamp,
     _WithTimestamps,
@@ -64,75 +64,6 @@ from .table_mixins import (
 from .utils.is_table import is_table
 
 logger = logging.getLogger("ormantism")
-
-
-def create_table(model: type[Table], created: Optional[set[type[Table]]] = None) -> None:
-    """Create the table and referenced tables if they do not exist.
-
-    Uses Query.execute(..., ensure_structure=False) to avoid recursion.
-    """
-    if created is None:
-        created = set()
-    created.add(model)
-    for field in model._get_columns().values():
-        if field.is_reference:
-            for t in (field.base_type, field.secondary_type):
-                if inspect.isclass(t) and issubclass(t, Table) and t != Table and t not in created:
-                    create_table(t, created)
-    statements = list(model._get_table_sql_creations())
-    statements += sum(
-        (
-            list(field.sql_creations)
-            for field in model._get_columns().values()
-            if field.name not in ("created_at", "id")
-        ),
-        start=[],
-    )
-    statements += [
-        f"FOREIGN KEY ({name}) REFERENCES {field.base_type._get_table_name()}(id)"
-        for name, field in model._get_columns().items()
-        if field.is_reference
-        and field.secondary_type is None
-        and field.base_type != Table
-    ]
-    stmt_join = ",\n  ".join(statements)
-    sql = f"CREATE TABLE IF NOT EXISTS {model._get_table_name()} (\n  {stmt_join})"
-    Query(table=model).execute(sql, (), ensure_structure=False)
-
-
-def add_columns(model: type[Table]) -> None:
-    """Add any missing columns to the existing table (SQLite ALTER TABLE)."""
-    tbl = model._get_table_name()
-    rows = Query(table=model).execute(
-        f"SELECT name FROM pragma_table_info('{tbl}')",
-        (),
-        ensure_structure=False,
-    )
-    columns_names = {name for name, in rows}
-    # Never ALTER-add columns that mixins provide via TABLE_SQL_CREATIONS (id, created_at)
-    mixin_column_names = {
-        name
-        for stmt in model._get_table_sql_creations()
-        for name in (stmt.split()[0],)  # first token is column name
-    }
-    new_fields = [
-        field
-        for field in model._get_columns().values()
-        if field.name not in columns_names
-        and field.name not in mixin_column_names
-    ]
-    for field in new_fields:
-        logger.info("ADD COLUMN %s.%s", field.table.__name__, field.name)
-        for sql_creation in field.sql_creations:
-            try:
-                Query(table=model).execute(
-                    f"ALTER TABLE {model._get_table_name()} ADD COLUMN " + sql_creation,
-                    (),
-                    ensure_structure=False,
-                )
-            except sqlite3.OperationalError as error:
-                if "duplicate column name" not in error.args[0]:
-                    raise
 
 
 def _select_paths_from_expressions(

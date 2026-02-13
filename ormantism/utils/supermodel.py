@@ -2,96 +2,19 @@
 
 import logging
 import types
-import typing
 from copy import copy
 from types import GenericAlias
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel
 
 from .is_type_annotation import is_type_annotation
 from .get_base_type import get_base_type
-from .find_subclass import find_subclass
+from .schema import to_json_schema, from_json_schema
 
+# Re-export for backward compatibility
+__all__ = ["SuperModel", "to_json_schema", "from_json_schema"]
 
 logger = logging.getLogger(__name__)
-
-
-def to_json_schema(T: type) -> dict:
-    """Return a JSON Schema dict for the given type (e.g. for type fields)."""
-    wrapper = create_model("Wrapper", wrapped=T)
-    wrapper_schema = wrapper.model_json_schema()
-    schema = wrapper_schema["properties"]["wrapped"]
-    # include definitions defined at root
-    if "$defs" in wrapper_schema:
-        schema["$defs"] = schema.get("$defs", {}) | wrapper_schema["$defs"]
-    # original class name should be shema titles
-    name = getattr(T, "__name__", None)
-    if name is not None:
-        schema["title"] = name
-    return schema
-
-def from_json_schema(schema: dict, root_schema: dict=None) -> type:
-    """Reconstruct a Python type from its JSON schema representation."""
-    if not isinstance(schema, dict):
-        raise TypeError("Invalid schema format")
-    schema = copy(schema)
-    if root_schema is None:
-        root_schema = schema
-
-    # resolve ref (if necessary)
-    ref = schema.pop("$ref", None)
-    if ref:
-        if not ref.startswith("#/"):
-            raise ValueError(f"Invalid $ref: {ref}")
-        path = ref[2:]
-        cursor = root_schema
-        if path:
-            for key in path.split("/"):
-                cursor = cursor[key]
-        schema |= cursor
-
-    # Is it a union?
-    if "anyOf" in schema:
-        annotations = [from_json_schema(subschema)
-                       for subschema in schema["anyOf"]]
-        return typing.Union[*annotations]
-
-    schema_type = schema.get("type")
-    title = schema.get("title")
-
-    # Handle object types that might be SuperModel subclasses
-    if schema_type == "object" and title:
-        # Discover all SuperModel subclasses dynamically
-        model_cls = find_subclass(SuperModel, title)
-        if model_cls:
-            return model_cls
-        logger.warning("Cannot find subclass of SuperModel: %s", title)
-        from .rebuild_pydantic_model import rebuild_pydantic_model
-        return rebuild_pydantic_model(schema=schema, base=SuperModel)
-
-    # Handle basic scalar and container types
-    type_map = {
-        "string": str,
-        "integer": int,
-        "number": float,
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-        "null": type(None)
-    }
-
-    if schema_type in type_map:
-        if schema_type == "array":
-            items = schema.get("items")
-            if items:
-                item_type = from_json_schema(items, root_schema)
-                return list[item_type]
-        elif schema_type == "object":
-            # For generic dict without title, assume dict
-            return dict
-        return type_map[schema_type]
-
-    raise TypeError(f"Unsupported schema: {schema}")
 
 
 class SuperModel(BaseModel):
