@@ -1,21 +1,24 @@
 # Ormantism
 
-A tiny, simple ORM built on top of Pydantic.
+A lightweight ORM built on Pydantic for simple CRUD with minimal code. Use it when you need straightforward database access without the overhead of a full-featured ORM.
 
-When you need to perform simple CRUD operations with minimal code.
+**Supported backends:** SQLite (built-in), MySQL, PostgreSQL. Database URLs use the same style as SQLAlchemy.
 
-Offers support for PostgreSQL, MySQL, SQLite (database URL syntax is the same as in SQLAlchemy).
+---
 
 ## Features
 
-- **Simple Model Declaration**: Define your models using familiar Pydantic syntax
-- **Automatic Table Creation**: Tables are created automatically when first accessed
-- **Lazy Loading**: Relationships are loaded on-demand for optimal performance
-- **Transaction Support**: Built-in transaction management with automatic rollback
-- **Preloading**: Efficiently load related data with JOIN queries
-- **Optional Timestamps**: Add created_at, updated_at, deleted_at fields automatically
-- **Load-or-create**: Find by criteria or create in one call
-- **Versioning**: Optional versioning along specified fields
+- **Pydantic-based models** — Define tables with type hints and optional defaults
+- **Auto table creation** — Tables are created on first use; new columns are added when the model gains fields
+- **Relationships** — Single and list references to other tables; lazy loading by default
+- **Preloading** — Eager-load relations with JOINs to avoid N+1 queries
+- **Fluent Query API** — `Model.q().where(...).select(...).order_by(...).first()` / `.all()`
+- **Timestamps** — Optional `created_at` / `updated_at` / `deleted_at` and soft deletes
+- **Versioning** — Optional row versioning so updates can create new rows instead of overwriting
+- **Load-or-create** — Find by criteria or create in one call, with control over which fields are used for the lookup
+- **Transactions** — Context manager with automatic commit/rollback
+
+---
 
 ## Installation
 
@@ -23,33 +26,36 @@ Offers support for PostgreSQL, MySQL, SQLite (database URL syntax is the same as
 pip install ormantism
 ```
 
-## Quick Start
+SQLite works with no extra dependencies. For MySQL or PostgreSQL, install the corresponding extra:
 
-### 1. Connect to Database
+```bash
+pip install ormantism[mysql]      # pymysql
+pip install ormantism[postgresql]  # psycopg2
+pip install ormantism[mysql,postgresql]
+```
+
+**Requires:** Python 3.12+, Pydantic 2.x.
+
+---
+
+## Quick start
+
+### Connect
 
 ```python
 import ormantism
 
-# Connect to a file database
 ormantism.connect("sqlite:///my_app.db")
-
-# Or use in-memory database for testing
-ormantism.connect("sqlite://:memory:")
-
-# MySQL
-ormantism.connect("mysql://login:password@host:port/database")
-
-# PostgreSQL
-ormantism.connect("postgresql://login:password@host:port/database")
+# or: sqlite://:memory:  |  mysql://user:pass@host/db  |  postgresql://user:pass@host/db
 ```
 
-### 2. Define Models
+### Define models
 
 ```python
 from ormantism import Table
 from typing import Optional
 
-class User(Table):
+class User(Table, with_timestamps=True):
     name: str
     email: str
     age: Optional[int] = None
@@ -57,284 +63,306 @@ class User(Table):
 class Post(Table, with_timestamps=True):
     title: str
     content: str
-    author: User
+    author: User | None = None
 ```
 
-### 3. Create and Save Records
+### Create and query
 
 ```python
-# Create a user
+# Create (saved automatically)
 user = User(name="Alice", email="alice@example.com", age=30)
-# The record is automatically saved to the database
+post = Post(title="Hello", content="World", author=user)
 
-# Create a post linked to the user
-post = Post(title="My First Post", content="Hello World!", author=user)
-```
+# Query: one row
+user = User.q().where(User.id == 1).first()
+user = User.q().where(name="Alice").first()
 
-### 4. Query Records
+# Query: all matching rows
+posts = Post.q().where(author=user).all()
 
-```python
-# Load by ID
-user = User.load(id=1)
+# Update
+user.age = 31   # auto-saved on assignment
+user.update(age=31, email="alice@new.com")
 
-# Load by criteria
-user = User.load(name="Alice")
-user = User.load(email="alice@example.com")
-
-# Load latest post by this author
-latest_post = Post.load(author=user, last_created=True)
-
-# Load all records
-users = User.load_all()
-
-# Load with criteria
-users_named_alice = User.load_all(name="Alice")
-```
-
-### 5. Update Records
-
-```python
-user = User.load(id=1)
-user.age = 31  # Automatically saved to database
-# or
-user.update(age=31, email="alice.updated@example.com")
-```
-
-### 6. Delete Records
-
-```python
-user = User.load(id=1)
+# Delete (soft delete when with_timestamps=True)
 user.delete()
 ```
 
-## Advanced Features
+---
 
-### Load or create
+## Query API
 
-Find a row by criteria or create it in one call. Use `_search_fields` to limit which fields are used for the lookup; other fields are then used to update the row if it already exists, or to populate a new row if not.
+The primary way to query is `Model.q()`, which returns a fluent `Query` builder. Chain methods and end with `.first()`, `.all()`, or iterate.
+
+### Basic usage
 
 ```python
-# Create or reuse by name; update value if name already exists
-user = User.load_or_create(_search_fields=("name",), name="Alice", email="alice@example.com")
-user2 = User.load_or_create(_search_fields=("name",), name="Alice", email="new@example.com")  # same row, email updated
+# One row or None
+user = User.q().where(User.id == 1).first()
+user = User.q().where(name="Alice").first()
+
+# All matching rows
+users = User.q().where(age__gte=18).all()
+users = list(User.q().where(name="Bob"))
+
+# Limit and offset
+users = User.q().limit(10).all()
+page = User.q().offset(20).limit(10).all()
 ```
 
-### Timestamps
+### Where: expression-style and Django-style
 
-Add automatic timestamp tracking to your models:
+**Expression-style** — SQLAlchemy-like, using model attributes and operators:
+
+```python
+User.q().where(User.name == "Alice").first()
+User.q().where(User.age >= 18, User.email.is_not_null()).all()
+User.q().where(Post.author.name.icontains("smith")).all()   # filter by related column
+```
+
+**Django-style kwargs** — `field__lookup=value`:
+
+```python
+User.q().where(name="Alice")                    # exact (default)
+User.q().where(name__icontains="alice")         # case-insensitive contains
+User.q().where(age__gte=18, age__lt=65)         # gt, gte, lt, lte
+User.q().where(name__in=["Alice", "Bob"])       # IN
+User.q().where(name__range=(1, 10))             # BETWEEN
+User.q().where(author__isnull=True)             # IS NULL
+User.q().where(book__title__contains="Python")  # nested path
+```
+
+Supported lookups: `exact`, `iexact`, `lt`, `lte`, `gt`, `gte`, `in`, `range`, `isnull`, `contains`, `icontains`, `startswith`, `istartswith`, `endswith`, `iendswith`, `like`, `ilike`.
+
+### Select and preload
+
+Use `select()` to choose which columns/relations to fetch. Relations in `select()` are eager-loaded (JOINs), avoiding N+1 lazy loads.
+
+```python
+# Preload a relation (all columns from root + author)
+book = Book.q().select("author").where(Book.id == 1).first()
+book.author  # no lazy load
+
+# Preload nested path
+book = Book.q().select("author.publisher").where(Book.id == 1).first()
+
+# Multiple relations
+users = User.q().select("profile", "posts").where(User.active == True).all()
+
+# Expression-style
+User.q().select(User.name, User.book.title).where(...)
+```
+
+Without `select()` for a relation, accessing `row.author` triggers a lazy load (and a warning).
+
+### Order, limit, offset
+
+```python
+User.q().order_by(User.name).all()           # ascending
+User.q().order_by(User.created_at.desc).all()  # descending
+User.q().order_by(User.name, User.id).all()  # multiple columns
+
+User.q().limit(10).offset(20).all()
+```
+
+### Soft-deleted rows
+
+For tables with `with_timestamps=True`, soft-deleted rows are excluded by default. Include them with:
+
+```python
+User.q().include_deleted().where(User.id == 1).first()
+```
+
+### Query execution
+
+| Method | Returns |
+|--------|---------|
+| `.first()` | One `Model` or `None` |
+| `.all(limit=N)` | List of `Model` |
+| `list(q)` | Same as `.all()` |
+| `for row in q:` | Iterate (lazy) |
+
+---
+
+## Model options
+
+### Timestamps and soft delete
 
 ```python
 class Post(Table, with_timestamps=True):
     title: str
     content: str
+# Adds: created_at, updated_at, deleted_at. delete() becomes soft delete.
 ```
 
-This adds `created_at`, `updated_at`, and `deleted_at` fields. Soft deletes are used when timestamps are enabled.
+Only some timestamps:
+
+```python
+class Log(Table, with_created_at_timestamp=True, with_timestamps=False):
+    message: str
+```
 
 ### Versioning
 
-Use `versioning_along=(...)` so that updates that change those fields create a new row instead of updating in place (useful for history).
+When specified fields change on update, a new row is created instead of updating in place:
 
 ```python
 class Document(Table, versioning_along=("name",)):
     name: str
     content: str
 
-d1 = Document(name="foo", content="v1")
-d2 = Document(name="foo", content="v2")  # New row; same name, different content
+doc = Document(name="foo", content="v1")
+doc = Document(name="foo", content="v2")  # New row; same name, new content
 ```
 
-### Relationships and Lazy Loading
+### Named connection
 
 ```python
-class Author(Table):
-    name: str
-
-class Book(Table):
-    title: str
-    author: Author
-
-# Create records
-author = Author(name="Jane Doe")
-book = Book(title="My Book", author=author)
-
-# Lazy loading - author is loaded from DB when accessed
-book = Book.load(id=1)
-print(book.author.name)  # Database query happens here
+class Remote(Table, connection_name="secondary"):
+    ...
 ```
 
-### Preloading (Eager Loading)
+---
 
-Avoid N+1 queries by preloading relationships:
+## Field types
 
-```python
-# Load book with author in a single query
-book = Book.load(id=1, preload="author")
-print(book.author.name)  # No additional database query
-
-# Preload nested relationships
-book = Book.load(id=1, preload="author.publisher")
-
-# Preload multiple relationships
-book = Book.load(id=1, preload=["author", "category"])
-```
-
-### Transactions
-
-```python
-from ormantism import transaction
-
-try:
-    with transaction() as t:
-        user1 = User(name="Alice", email="alice@example.com")
-        user2 = User(name="Bob", email="bob@example.com")
-        # Both users are saved automatically
-        # Transaction commits when exiting the context
-except Exception:
-    # Transaction is automatically rolled back on any exception
-    pass
-```
-
-### Querying Examples
-
-```python
-# Load single record
-user = User.load(name="Alice")
-latest_user = User.load(last_created=True)
-
-# Load multiple records
-all_users = User.load_all()
-users_named_alice = User.load_all(name="Alice")
-
-# Include soft-deleted records (when using timestamps)
-all_including_deleted = User.load_all(with_deleted=True)
-```
-
-## Model Definition
-
-### Basic Model
-
-```python
-class User(Table):
-    name: str
-    email: str
-    age: int = 25  # Default value
-    bio: Optional[str] = None  # Nullable field
-```
-
-### With Timestamps
-
-```python
-class Post(Table, with_timestamps=True):
-    title: str
-    content: str
-    # Automatically adds: created_at, updated_at, deleted_at
-```
-
-### Supported Field Types
-
-- `int`, `float`, `str`
-- `Optional[T]` for nullable fields
-- `list`, `dict` (stored as JSON)
-- `ormantism.JSON` — arbitrary JSON (dict, list, primitives); stored as a JSON column
-- `datetime.datetime`
-- `enum.Enum`
-- Pydantic models (stored as JSON)
-- References to other Table models (single or `list[...]`); optional and self-referential refs supported
+- **Scalars:** `int`, `float`, `str`, `bool`, `datetime.datetime`, `enum.Enum`
+- **Nullable:** `Optional[T] = None`
+- **Defaults:** `age: int = 0`
+- **JSON:** `list`, `dict`, or `ormantism.JSON` (arbitrary JSON in a column)
+- **Relations:** `Author` (single), `Optional[Author]`, `list[Child]`
+- **Generic reference:** `ref: Table` (any table; cannot be preloaded)
+- **Pydantic models:** Stored as JSON
 
 ### Relationships
 
 ```python
-class Category(Table):
+class Category(Table, with_timestamps=True):
     name: str
 
-class Post(Table):
+class Post(Table, with_timestamps=True):
     title: str
-    category: Category  # Foreign key relationship
-    tags: Optional[Category] = None  # Nullable relationship
+    category: Category | None = None
+    tags: list[Category] = []
+
+# Self-reference
+class Node(Table, with_timestamps=True):
+    parent: Optional["Node"] = None
+    name: str
 ```
 
-### Self-referential and list relationships
+---
+
+## Load or create
+
+Find by given fields or create; other fields update the row if it exists or set values on create:
 
 ```python
-from typing import Optional
-from pydantic import Field
-
-class Node(Table):
-    parent: Optional["Node"] = None  # Self-reference
-    name: str
-
-class Parent(Table):
-    name: str
-    children: list["Parent"] = Field(default_factory=list)  # List of references
+user = User.load_or_create(_search_fields=("name",), name="Alice", email="alice@example.com")
+# Same row, email updated:
+user2 = User.load_or_create(_search_fields=("name",), name="Alice", email="new@example.com")
 ```
 
-### JSON and generic reference fields
+---
+
+## Transactions
 
 ```python
-from ormantism import Table, JSON
+from ormantism import transaction
 
-class WithJSON(Table):
-    j: JSON  # Arbitrary JSON (dict, list, primitives); stored as JSON column
-
-# Generic reference (any Table subclass); cannot be preloaded
-class Ptr(Table):
-    ref: Table
+with transaction():
+    User(name="Alice", email="alice@example.com")
+    User(name="Bob", email="bob@example.com")
+# Commits on exit; rolls back on exception
 ```
 
-## API Reference
+Use `transaction(connection_name="...")` when using a named connection.
 
-### Table class methods
+---
 
-#### Creating and loading
-- `Model(**data)` - Create and automatically save a new record
-- `Model.load_or_create(_search_fields=("name",), **data)` - Load one matching the given fields, or create; only `_search_fields` are used for the lookup; other fields can update the row if it already exists
-- `Model.load(**criteria)` - Load single record
-- `Model.load(last_created=True)` - Load most recently created record
-- `Model.load(as_collection=True, **criteria)` - Load as list (no LIMIT 1)
-- `Model.load_all(**criteria)` - Load multiple records
-- `Model.load(preload="relationship")` or `preload=["a", "b"]` - Eager load relationships (not supported for generic `Table` references)
-- `Model.load(with_deleted=True)` - Include soft-deleted records
+## API summary
 
-#### Updating
-- `instance.update(**kwargs)` - Update multiple fields
-- `instance.field = value` - Update single field (auto-saves)
+### Table: create and persist
 
-#### Deleting
-- `instance.delete()` - Delete record (soft delete if timestamps enabled)
+- `Model(**kwargs)` — Create and save a row
+- `instance.field = value` — Assign and auto-save
+- `instance.update(**kwargs)` — Update fields and save
+- `instance.delete()` — Delete (soft if timestamps enabled)
 
-### Database and transaction
+### Table: query builder
 
-- `ormantism.connect(database_url)` - Connect to database
-- `ormantism.transaction(connection_name=...)` - Get transaction context manager (optional `connection_name` for multi-connection setups)
+- `Model.q()` — Return a `Query` for this table (supports `_transform_query` from mixins)
+
+### Query: fluent chain
+
+- `q.where(*exprs, **kwargs)` — Filter (expressions and/or Django-style kwargs)
+- `q.filter(...)` — Alias for `where`
+- `q.select(*paths)` — Preload relations (e.g. `"author"`, `"author.publisher"`)
+- `q.order_by(*exprs)` — ORDER BY (e.g. `User.name`, `User.created_at.desc`)
+- `q.limit(n)` / `q.offset(n)` — Pagination
+- `q.include_deleted()` — Include soft-deleted rows
+- `q.first()` — One row or None
+- `q.all(limit=N)` — List of rows
+- `q.update(**kwargs)` — Update matched rows
+- `q.delete()` — Delete matched rows
+
+### Table: load or create
+
+- `Model.load_or_create(_search_fields=(...), **data)` — Load by search fields or create; other fields update or populate
+
+### Connection and transaction
+
+- `ormantism.connect(url)` — Set default connection (SQLAlchemy-style URL)
+- `ormantism.transaction(connection_name=...)` — Context manager for transactions
 
 ### Table class options
 
-- `Table(..., with_timestamps=True)` - Add created_at, updated_at, deleted_at and soft deletes
-- `Table(..., with_created_at_timestamp=True, with_timestamps=False)` - Only created_at
-- `Table(..., with_updated_at_timestamp=True, with_timestamps=False)` - Only updated_at
-- `Table(..., versioning_along=("name",))` - Version rows by these fields (creates new row on update when these change)
-- `Table(..., connection_name="custom_conn")` - Use a named connection (inherited by subclasses)
+| Option | Effect |
+|--------|--------|
+| `with_timestamps=True` | Add created_at, updated_at, deleted_at; soft delete |
+| `with_created_at_timestamp=True` | Only created_at |
+| `with_updated_at_timestamp=True` | Only updated_at |
+| `versioning_along=("field",)` | New row when these fields change on update |
+| `connection_name="name"` | Use named connection (inherited by subclasses) |
+
+---
+
+## Deprecated: load and load_all
+
+`Model.load(**criteria)` and `Model.load_all(**criteria)` are deprecated. Use the Query API instead:
+
+```python
+# Instead of: User.load(id=1)
+User.q().where(id=1).first()
+
+# Instead of: User.load_all(name="Alice")
+User.q().where(name="Alice").all()
+
+# Instead of: Book.load(id=1, preload="author")
+Book.q().select("author").where(Book.id == 1).first()
+
+# Instead of: User.load_all(with_deleted=True)
+User.q().include_deleted().all()
+```
+
+---
 
 ## Code reference
 
-For a full **code reference** of the library (all classes and methods with definition and usage locations), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**. It lists every public class (e.g. `Table`, `Field`, `JoinInfo`, `Transaction`, `SuperModel`) and method with their source file and line numbers and where they are used—useful when navigating the codebase or contributing.
+For a full **code reference** (classes and methods with descriptions, file/line, and usages), see **[ormantism/REFERENCE.md](ormantism/REFERENCE.md)**.
+
+---
 
 ## Limitations
 
-- **Simple Queries**: Complex queries may require raw SQL
-- **No Migrations**: New columns are added automatically when the model gains fields; dropping or renaming columns, or changing column types, requires manual handling
-- **Basic Relationships**: Only supports simple foreign key relationships
+- **Migrations** — New columns are added automatically; dropping/renaming columns or changing types is not automated (see [TODO.md](TODO.md)).
+- **Relations** — Single and list references; no built-in many-to-many tables.
+- **Generic references** — `ref: Table` cannot be preloaded (JOIN not supported).
 
-## Requirements
+---
 
-- Python 3.12+
-- Pydantic
+## License and contributing
 
-## License
+**License:** MIT.
 
-MIT License
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome. See **[TODO.md](TODO.md)** for ideas and planned improvements.

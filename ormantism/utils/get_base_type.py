@@ -36,7 +36,12 @@ def get_base_type(complex_type: type) -> tuple[type, tuple, bool]:
 
     # Check if it's a union type, including the new | syntax
     if origin is Union or origin is UnionType:
-        if complex_type in (type | GenericAlias, type | GenericAlias | None):
+        if complex_type in (
+            type | GenericAlias,
+            type | GenericAlias | None,
+            type | GenericAlias | UnionType,
+            type | GenericAlias | UnionType | None,
+        ):
             return type, (), None in args
         if type(None) not in args:
             raise TypeError(

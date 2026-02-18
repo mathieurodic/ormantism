@@ -136,7 +136,8 @@ class Transaction:
         if not self._active:
             raise TransactionError("Transaction is no longer active")
 
-        # format parameters
+        # format parameters (copy so we don't mutate a tuple)
+        parameters = list(parameters)
         for p, parameter in enumerate(parameters):
             if isinstance(parameter, (dict, list)):
                 parameters[p] = json.dumps(parameter)

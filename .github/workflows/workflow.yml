@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   test:
@@ -83,6 +86,12 @@ jobs:
       - name: Build package
         if: steps.version_check.outputs.deploy == 'true'
         run: python -m build
+
+      - name: Verify build artifacts
+        if: steps.version_check.outputs.deploy == 'true'
+        run: |
+          test -d dist && test -n "$(ls -A dist 2>/dev/null)" || \
+            (echo "No build artifacts in dist/; deploy aborted." && exit 1)
 
       - name: Publish to PyPI
         if: steps.version_check.outputs.deploy == 'true'
