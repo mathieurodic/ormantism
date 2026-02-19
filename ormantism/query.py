@@ -443,7 +443,10 @@ class Query(BaseModel):
     def sql_where(self) -> str:
         """Return WHERE clause (including leading newline) or empty string if no conditions."""
         conditions = []
-        if issubclass(self.table, _WithTimestamps) and not self.with_deleted:
+        # Default soft-delete behavior: when a table supports soft delete, exclude deleted rows.
+        # This is used for both timestamped tables (_WithTimestamps) and versioned tables
+        # (_WithVersion inherits _WithSoftDelete).
+        if issubclass(self.table, _WithSoftDelete) and not self.with_deleted:
             conditions.append(f"{self.table._get_table_name()}.deleted_at IS NULL")
         for expression in self.where_expressions:
             conditions.append(expression.sql)
@@ -708,9 +711,8 @@ class Query(BaseModel):
             tbl = cls._get_table_name()
             sql = f"UPDATE {tbl} SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL"
             values = []
-            for name, value in init_data.items():
-                if name not in cls._VERSIONING_ALONG:
-                    continue
+            for name in cls._VERSIONING_ALONG:
+                value = init_data.get(name)
                 if value is None:
                     sql += f" AND {name} IS NULL"
                 else:
@@ -718,7 +720,11 @@ class Query(BaseModel):
                     values.append(value)
             sql += " RETURNING version"
             rows = self.execute(sql, values, ensure_structure=True)
-            init_data["version"] = (max(version for version, in rows) + 1) if rows else 0
+            next_version = (max(version for version, in rows) + 1) if rows else 0
+            init_data["version"] = next_version
+            # Ensure the computed version is actually persisted.
+            # We must avoid triggering __setattr__/update() hooks, so use object.__setattr__.
+            object.__setattr__(instance, "version", next_version)
 
         exclude = set(cls.model_fields)
         include = set()

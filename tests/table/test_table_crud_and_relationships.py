@@ -167,3 +167,117 @@ class TestVersioning:
         original_content = d2.content
         d2.content += " :)"
         assert d2.content == original_content + " :)"
+
+
+class TestVersioningSemantics:
+    """Stronger assertions around versioned series: ids, version increments, soft-delete, updates."""
+
+    def test_versioning_creates_new_rows_and_soft_deletes_previous(self, setup_db):
+        import datetime
+
+        class Doc(Table, versioning_along=("name",)):
+            name: str
+            content: str
+
+        d1 = Doc(name="a", content="v1")
+        assert_table_instance(
+            d1,
+            {
+                "id": 1,
+                "deleted_at": None,
+                "version": 0,
+                "name": "a",
+                "content": "v1",
+            },
+        )
+
+        d2 = Doc(name="a", content="v2")
+        assert_table_instance(
+            d2,
+            {
+                "id": 2,
+                "deleted_at": None,
+                "version": 1,
+                "name": "a",
+                "content": "v2",
+            },
+        )
+
+        # Default query should only see current row.
+        rows_current = Doc.q().where(name="a").all()
+        assert len(rows_current) == 1
+        assert rows_current[0].id == 2
+        assert rows_current[0].version == 1
+
+        # With include_deleted: both versions are visible.
+        rows_all = Doc.q().include_deleted().where(name="a").all()
+        assert len(rows_all) == 2
+        # Order is deterministic due to default ordering: name ASC, version DESC.
+        assert [r.version for r in rows_all] == [1, 0]
+        assert [r.id for r in rows_all] == [2, 1]
+
+        older = rows_all[1]
+        assert older.deleted_at is not None
+        assert isinstance(older.deleted_at, datetime.datetime)
+
+    def test_versioning_series_are_independent(self, setup_db):
+        class Doc(Table, versioning_along=("name",)):
+            name: str
+            content: str
+
+        a1 = Doc(name="a", content="a1")
+        a2 = Doc(name="a", content="a2")
+        b1 = Doc(name="b", content="b1")
+
+        assert a1.version == 0
+        assert a2.version == 1
+        assert b1.version == 0
+
+    def test_assignment_creates_new_version(self, setup_db):
+        import datetime
+
+        class Doc(Table, versioning_along=("name",)):
+            name: str
+            content: str
+
+        doc = Doc(name="a", content="v1")
+        old_id = doc.id
+        assert doc.version == 0
+
+        doc.content = "v2"
+        assert doc.id != old_id
+        assert doc.version == 1
+        assert doc.content == "v2"
+
+        history = Doc.q().include_deleted().where(name="a").all()
+        assert len(history) == 2
+        assert {r.version for r in history} == {0, 1}
+        old = next(r for r in history if r.version == 0)
+        assert old.id == old_id
+        assert old.deleted_at is not None
+        assert isinstance(old.deleted_at, datetime.datetime)
+
+    def test_update_method_creates_new_version(self, setup_db):
+        class Doc(Table, versioning_along=("name",)):
+            name: str
+            content: str
+
+        doc = Doc(name="a", content="v1")
+        old_id = doc.id
+        assert doc.version == 0
+
+        doc.update(content="v2")
+        assert doc.id != old_id
+        assert doc.version == 1
+        assert doc.content == "v2"
+
+    def test_versioning_along_fields_are_immutable(self, setup_db):
+        class Doc(Table, versioning_along=("name",)):
+            name: str
+            content: str
+
+        doc = Doc(name="a", content="v1")
+        with pytest.raises(AttributeError, match="versioning_along"):
+            doc.name = "b"
+        with pytest.raises(AttributeError, match="versioning_along"):
+            doc.update(name="b")

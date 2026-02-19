@@ -195,8 +195,10 @@ class TestLoadOrderAndVersioning:
 
         Doc(name="a", content="1")
         Doc(name="a", content="2")
+        # load() should only return current rows by default (soft-delete filter)
         rows = Doc.load(as_collection=True)
-        assert len(rows) >= 2
+        assert len(rows) == 1
+        assert rows[0].content == "2"
 
     def test_load_order_by_id_when_no_timestamps_no_version(self, setup_db):
         class A(Table, with_timestamps=False):

@@ -528,6 +528,33 @@ class TestQueryIncludeDeleted:
         assert found.id == a.id
 
 
+class TestQueryIncludeDeletedForVersionedTables:
+    """Soft-delete filtering should apply to versioned tables as well."""
+
+    def test_versioned_table_excludes_deleted_by_default_and_includes_with_flag(self, setup_db):
+        class Doc(Table, versioning_along=("name",)):
+            name: str = ""
+            content: str = ""
+
+        d1 = Doc(name="a", content="v1")
+        d2 = Doc(name="a", content="v2")
+        assert d1.id == 1
+        assert d2.id == 2
+
+        # Old version is soft-deleted when the new version is created.
+        # Default query should only return the latest (non-deleted) row.
+        current = Doc.q().where(name="a").all()
+        assert len(current) == 1
+        assert current[0].id == d2.id
+        assert current[0].version == 1
+
+        # With include_deleted: both versions show up.
+        history = Doc.q().include_deleted().where(name="a").all()
+        assert len(history) == 2
+        ids = {row.id for row in history}
+        assert ids == {d1.id, d2.id}
+
+
 class TestQueryAllGetFirst:
     """Test all(), get(), first(), count(), exists()."""
 

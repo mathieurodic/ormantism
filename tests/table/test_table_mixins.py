@@ -41,11 +41,11 @@ class TestWithVersionTransformQuery:
 
         q = Doc.q()
         assert len(q.order_by_expressions) == 2  # name (ASC), version (DESC)
-        paths = [e.column_expression.path_str for e in q.order_by_expressions]
-        assert "name" in paths
-        assert "version" in paths
-        version_expr = next(e for e in q.order_by_expressions if "version" in e.column_expression.path_str)
-        assert version_expr.desc is True
+        e1, e2 = q.order_by_expressions
+        assert e1.column_expression.path_str == "name"
+        assert e1.desc is False
+        assert e2.column_expression.path_str == "version"
+        assert e2.desc is True
 
     def test_version_order_includes_multiple_along_columns(self, setup_db):
         class Doc(Table, versioning_along=("name", "key")):
@@ -53,10 +53,14 @@ class TestWithVersionTransformQuery:
             key: str = ""
 
         q = Doc.q()
-        paths = [e.column_expression.path_str for e in q.order_by_expressions]
-        assert "name" in paths
-        assert "key" in paths
-        assert "version" in paths
+        assert len(q.order_by_expressions) == 3
+        e1, e2, e3 = q.order_by_expressions
+        assert e1.column_expression.path_str == "name"
+        assert e1.desc is False
+        assert e2.column_expression.path_str == "key"
+        assert e2.desc is False
+        assert e3.column_expression.path_str == "version"
+        assert e3.desc is True
 
 
 class TestMixinAttributes:

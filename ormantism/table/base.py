@@ -13,6 +13,7 @@ from ..column import Column
 from .meta import TableMeta
 from .mixins import _WithSoftDelete
 from .hydratable import Hydratable
+from .mixins import _WithVersion
 
 
 class Table(Hydratable, metaclass=TableMeta):
@@ -87,6 +88,58 @@ class Table(Hydratable, metaclass=TableMeta):
     def on_before_update(self, new_data):
         """Hook to validate and persist updates before model changes are applied."""
         self.check_read_only(new_data)
+
+        # Versioned tables are copy-on-write: any update inserts a new row (new id/version)
+        # and soft-deletes the previous one. The same Python instance is mutated to point
+        # to the newly inserted row.
+        if isinstance(self, _WithVersion) and getattr(self.__class__, "_VERSIONING_ALONG", None):
+            along = tuple(self.__class__._VERSIONING_ALONG or ())
+            # `versioning_along` fields define the series key and are immutable.
+            immutable_changes = set(new_data) & set(along)
+            if immutable_changes:
+                plural = "s" if len(immutable_changes) > 1 else ""
+                cols = ", ".join(sorted(immutable_changes))
+                raise AttributeError(
+                    f"Cannot update versioning_along field{plural} of {self.__class__.__name__}: {cols}"
+                )
+
+            cls = self.__class__
+
+            # Build the new row data by copying the current row's persisted values
+            # (this may trigger lazy loads if the instance was partially hydrated),
+            # then override with the requested changes.
+            init_data: dict[str, Any] = {}
+            read_only = set(getattr(cls, "_READ_ONLY_COLUMNS", ()))
+            for name in cls._get_columns().keys():
+                if name in read_only:
+                    continue
+                init_data[name] = getattr(self, name)
+            init_data.update(new_data)
+
+            # Insert a new version row. We must ensure the instance passed to insert()
+            # already has values for model fields, because Query.insert() reads from
+            # instance attributes when building the INSERT statement.
+            new_instance = cls.__new__(cls)
+            new_instance.__dict__.update(init_data)
+            new_instance.__dict__["id"] = None
+
+            cls.q().insert(instance=new_instance, init_data=init_data)
+
+            # Mutate this instance to represent the newly inserted row.
+            # Use object.__setattr__ to avoid triggering the assignment/update hooks.
+            object.__setattr__(self, "id", new_instance.id)
+            object.__setattr__(self, "version", getattr(new_instance, "version", None))
+            if hasattr(self, "created_at") and hasattr(new_instance, "created_at"):
+                object.__setattr__(self, "created_at", getattr(new_instance, "created_at"))
+            # The newly inserted row is current.
+            if hasattr(self, "deleted_at"):
+                object.__setattr__(self, "deleted_at", None)
+
+            # Clear timestamps that may be lazily loaded / recomputed
+            self.__dict__.pop("updated_at", None)
+            return
+
+        # Default (non-versioned) update-in-place.
         self.q().where(id=self.id).update(**new_data)
         self.__dict__.pop("updated_at", None)
 

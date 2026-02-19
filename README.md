@@ -14,7 +14,7 @@ A lightweight ORM built on Pydantic for simple CRUD with minimal code. Use it wh
 - **Preloading** — Eager-load relations with JOINs to avoid N+1 queries
 - **Fluent Query API** — `Model.q().where(...).select(...).order_by(...).first()` / `.all()`
 - **Timestamps** — Optional `created_at` / `updated_at` / `deleted_at` and soft deletes
-- **Versioning** — Optional row versioning so updates can create new rows instead of overwriting
+- **Versioning** — Optional row history (append-only by key) via soft-deleted previous versions
 - **Load-or-create** — Find by criteria or create in one call, with control over which fields are used for the lookup
 - **Transactions** — Context manager with automatic commit/rollback
 
@@ -204,7 +204,16 @@ class Log(Table, with_created_at_timestamp=True, with_timestamps=False):
 
 ### Versioning
 
-When specified fields change on update, a new row is created instead of updating in place:
+Ormantism supports a lightweight **row-history / version series** mode.
+
+When `versioning_along` is set, rows with the same values for those fields form a series.
+
+Any change to a versioned instance (either via attribute assignment or `instance.update(...)`) will:
+1. **Insert a new row** with an incremented `version` (new `id`)
+2. **Soft-delete** the previous “current” row in the series (`deleted_at` is set)
+3. Mutate the *same Python instance* so it now points to the new row (its `id` changes)
+
+Fields listed in `versioning_along` are treated as **immutable** (changing them raises).
 
 ```python
 class Document(Table, versioning_along=("name",)):
@@ -212,8 +221,17 @@ class Document(Table, versioning_along=("name",)):
     content: str
 
 doc = Document(name="foo", content="v1")
-doc = Document(name="foo", content="v2")  # New row; same name, new content
+doc = Document(name="foo", content="v2")  # New row; same name, version increments
+
+doc.content = "v3"   # New row again (id changes)
+doc.update(content="v4")  # New row again
 ```
+
+Querying:
+- Default queries exclude soft-deleted rows. For a versioned series, that means you’ll see only the latest (current) row.
+- Use `include_deleted()` to fetch full history.
+
+Backend note: version assignment currently relies on `UPDATE ... RETURNING` support (works on PostgreSQL and SQLite ≥ 3.35; may not work on some MySQL setups).
 
 ### Named connection
 
@@ -322,7 +340,7 @@ Use `transaction(connection_name="...")` when using a named connection.
 | `with_timestamps=True` | Add created_at, updated_at, deleted_at; soft delete |
 | `with_created_at_timestamp=True` | Only created_at |
 | `with_updated_at_timestamp=True` | Only updated_at |
-| `versioning_along=("field",)` | New row when these fields change on update |
+| `versioning_along=("field",)` | Enable row history series keyed by these fields (copy-on-write on update; previous becomes soft-deleted) |
 | `connection_name="name"` | Use named connection (inherited by subclasses) |
 
 ---
