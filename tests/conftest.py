@@ -1,3 +1,5 @@
+"""Pytest fixtures and helpers for ormantism tests."""
+
 import os
 
 import pytest
@@ -23,11 +25,15 @@ def expect_lazy_loads(recwarn):
             assert expect_lazy_loads.count == 2
     """
     class Helper:
+        """Helper for asserting lazy-load warnings collected by pytest."""
+
         @property
         def count(self):
+            """Return the number of lazy-load warnings captured."""
             return sum(1 for w in recwarn if _is_lazy_load_warning(w))
 
         def expect(self, n):
+            """Assert that exactly n lazy-load warnings were emitted."""
             c = self.count
             assert c == n, f"Expected {n} lazy load(s), got {c}"
 

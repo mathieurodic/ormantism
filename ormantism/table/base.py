@@ -22,6 +22,7 @@ class Table(Hydratable, metaclass=TableMeta):
     _ensured_table_structure: ClassVar[bool] = False
 
     def __eq__(self, other: "Table"):
+        """Compare table instances by class and primary key hash."""
         if not isinstance(other, self.__class__):
             raise ValueError(
                 f"Comparing instances of different classes: {self.__class__} "
@@ -30,6 +31,7 @@ class Table(Hydratable, metaclass=TableMeta):
         return hash(self) == hash(other)
 
     def __hash__(self):
+        """Hash the table instance using the class and primary key."""
         raw_id = object.__getattribute__(self, "__dict__").get("id")
         if isinstance(raw_id, ColumnExpression):
             raise TypeError(
@@ -39,6 +41,7 @@ class Table(Hydratable, metaclass=TableMeta):
         return hash((self.__class__, raw_id))
 
     def __getattribute__(self, name: str) -> Any:
+        """Provide lazy-loading for columns stored as ColumnExpression placeholders."""
         d = object.__getattribute__(self, "__dict__")
         if name not in d:
             cls = object.__getattribute__(self, "__class__")
@@ -74,18 +77,22 @@ class Table(Hydratable, metaclass=TableMeta):
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}") from None
 
     def __deepcopy__(self, memo):
+        """Return self to avoid copying Table instances."""
         return self
 
     def on_after_create(self, init_data: dict):
+        """Hook to persist a newly created instance to the database."""
         self.__class__.q().insert(instance=self, init_data=init_data)
 
     def on_before_update(self, new_data):
+        """Hook to validate and persist updates before model changes are applied."""
         self.check_read_only(new_data)
         self.q().where(id=self.id).update(**new_data)
         self.__dict__.pop("updated_at", None)
 
     @classmethod
     def load_or_create(cls, _search_fields=None, **data):
+        """Load an existing row matching fields or create a new one."""
         on_conflict = list(data) if _search_fields is None else _search_fields
         if not on_conflict:
             return cls(**data)
@@ -94,14 +101,17 @@ class Table(Hydratable, metaclass=TableMeta):
     @classmethod
     @cache
     def _has_column(cls, name: str) -> bool:
+        """Return True if the model defines the given column name."""
         return name in cls.model_fields
 
     @classmethod
     def _get_columns(cls) -> dict[str, Column]:
+        """Return the column mapping for this table class."""
         return getattr(cls, "_columns", {})
 
     @classmethod
     def _get_column(cls, name: str) -> Column:
+        """Return the Column instance matching name or column.name."""
         columns = cls._get_columns()
         if name in columns:
             return columns[name]
@@ -112,6 +122,7 @@ class Table(Hydratable, metaclass=TableMeta):
 
     @classmethod
     def _get_table_sql_creations(cls) -> list[str]:
+        """Collect table creation SQL statements from base classes."""
         seen_columns = set()
         statements = []
         for base in cls.__mro__:
@@ -124,6 +135,7 @@ class Table(Hydratable, metaclass=TableMeta):
         return statements
 
     def check_read_only(self, data):
+        """Raise if data attempts to modify read-only columns."""
         read_only_columns = list(set(data) & set(self._READ_ONLY_COLUMNS))
         read_only_count = len(read_only_columns)
         if read_only_count:
@@ -136,6 +148,7 @@ class Table(Hydratable, metaclass=TableMeta):
 
     @classmethod
     def process_data(cls, data: dict, for_filtering: bool = False) -> dict:
+        """Serialize incoming data using column serializers and metadata."""
         data = {**data}
         for name in list(data):
             value = data.pop(name)
@@ -157,10 +170,12 @@ class Table(Hydratable, metaclass=TableMeta):
         return data
 
     def delete(self):
+        """Delete this row from the database (soft or hard delete)."""
         self.q().where(id=self.id).delete()
 
     @classmethod
     def q(cls) -> "Query":
+        """Return a Query object for this table class with mixin transforms applied."""
         from ..query import Query
         q = Query(table=cls)
         for c in cls.__mro__:
@@ -170,12 +185,14 @@ class Table(Hydratable, metaclass=TableMeta):
 
     @classmethod
     def _transform_query(cls, q: "Query") -> "Query":
+        """Hook for mixins to transform a query for this table."""
         return q
 
     @classmethod
     def load(cls, as_collection: bool = False,
              with_deleted=False, preload: str | list[str] = [],
              **criteria) -> "Table":
+        """Deprecated convenience loader; use Query methods instead."""
         warnings.warn(
             "load() is deprecated; use cls.q().where(...).first() or cls.q().where(...).all() instead",
             DeprecationWarning,
@@ -195,6 +212,7 @@ class Table(Hydratable, metaclass=TableMeta):
 
     @classmethod
     def load_all(cls, **criteria) -> list["Table"]:
+        """Deprecated convenience loader returning all matching rows."""
         warnings.warn(
             "load_all() is deprecated; use cls.q().where(...).all() instead",
             DeprecationWarning,
@@ -204,8 +222,10 @@ class Table(Hydratable, metaclass=TableMeta):
 
     @classmethod
     def _get_table_name(cls) -> str:
+        """Return the default SQL table name for this class."""
         return cls.__name__.lower()
 
     @classmethod
     def get_column_expression(cls, name: str):
+        """Return a ColumnExpression for the given column name."""
         return cls._expression[name]

@@ -1791,7 +1791,7 @@ class TestQueryCoverageHelpers:
         class A(Table, with_timestamps=True):
             name: str = ""
 
-        paths = _select_paths_from_expressions(A, [A.name])
+        paths = _select_paths_from_expressions([A.name])
         assert "name" in paths
 
     def test_collect_table_expressions_skips_column_expression(self, setup_db):

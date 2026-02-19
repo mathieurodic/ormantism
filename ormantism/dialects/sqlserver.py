@@ -19,7 +19,7 @@ class SqlserverDialect(Dialect):
     }
 
     def connect(self, url: str):
-        import pyodbc
+        import pyodbc  # pylint: disable=import-outside-toplevel,import-error
         parsed = urllib.parse.urlparse(url)
         database = (parsed.path or "").lstrip("/") or None
         port = parsed.port or 1433

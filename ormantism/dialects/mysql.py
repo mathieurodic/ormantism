@@ -19,7 +19,7 @@ class MysqlDialect(Dialect):
     }
 
     def connect(self, url: str):
-        import pymysql
+        import pymysql  # pylint: disable=import-outside-toplevel,import-error
         parsed = urllib.parse.urlparse(url)
         return pymysql.connect(
             host=parsed.hostname,
