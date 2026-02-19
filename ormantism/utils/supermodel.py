@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 class SuperModel(BaseModel):
     """Pydantic BaseModel with before/after create/update triggers and type-field serialization."""
 
+    # Ensure validation (and field validators) run not only on construction but also
+    # on attribute assignment performed via SuperModel.update()/__setattr__.
+    model_config = {"validate_assignment": True}
+
     def __init_subclass__(cls, **kwargs):
         """Replace bare `type` annotations with type | GenericAlias for validation."""
         # Transform type annotations before the class is fully created
@@ -151,15 +155,47 @@ class SuperModel(BaseModel):
         }
         if not new_data:
             return
+
+        # Validate and apply Pydantic coercion *before* triggering persistence hooks.
+        # This ensures e.g. Table.on_before_update() writes already-validated values.
+        validated_data = dict(new_data)
+        for name in list(validated_data.keys()):
+            field_info = cls.model_fields.get(name)
+            if field_info is None:
+                continue
+            base_type, _secondary_type, _is_required = get_base_type(field_info.annotation)
+            if base_type is type:
+                # `type` fields are handled separately (see below).
+                validated_data.pop(name)
+
+        if validated_data:
+            # Validate/coerce on a copy so `before_update` can still abort the update safely.
+            validated_model = self.model_copy(update=validated_data)
+            for name in validated_data:
+                new_data[name] = getattr(validated_model, name)
         # keep track of old data (for last trigger)
         old_data = {name: getattr(self, name, None)
                     for name in new_data.keys()}
         self.trigger("before_update", new_data=new_data)
         for name, value in new_data.items():
             field_info = cls.model_fields.get(name)
-            if field_info is not None and is_type_annotation(field_info.annotation):
-                # TODO: better validation here
-                self.__dict__[name] = value
+            if field_info is None:
+                BaseModel.__setattr__(self, name, value)
+                continue
+
+            base_type, _secondary_type, is_required = get_base_type(field_info.annotation)
+            if base_type is type:
+                # Keep the same semantics as __init__ for type fields.
+                if isinstance(value, dict):
+                    value = from_json_schema(value)
+                if isinstance(value, type):
+                    self.__dict__[name] = value
+                elif isinstance(value, (GenericAlias, types.UnionType)):
+                    self.__dict__[name] = value
+                elif value is None and not is_required:
+                    self.__dict__[name] = None
+                else:
+                    raise ValueError(f"Not a type: {value} ({type(value)})")
             else:
                 BaseModel.__setattr__(self, name, value)
         self.trigger("after_update", old_data=old_data)
