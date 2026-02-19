@@ -62,7 +62,7 @@ min-public-methods=0
 overgeneral-exceptions=builtins.BaseException,builtins.Exception
 
 [FORMAT]
-max-line-length=100
+max-line-length=120
 indent-string='    '
 indent-after-paren=4
 ignore-long-lines=^\s*(# )?<?https?://\S+>?$

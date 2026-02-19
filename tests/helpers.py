@@ -10,7 +10,7 @@ def assert_table_instance(inst, expected: dict, exclude: set = None):
     Use exclude to skip fields (e.g. timestamps when not relevant).
     """
     exclude = exclude or set()
-    for name, col in inst.__class__._get_columns().items():
+    for name, _col in inst.__class__._get_columns().items():
         if name in exclude:
             continue
         assert name in expected, f"Test must assert {name}"

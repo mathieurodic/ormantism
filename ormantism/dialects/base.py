@@ -15,7 +15,7 @@ class _DialectF:
         self._dialect = dialect
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
-        F = type(self._dialect).F
+        F = type(self._dialect).F  # pylint: disable=invalid-name
         if name in F:
             return F[name]
         raise AttributeError(name)
@@ -43,4 +43,4 @@ class Dialect(BaseModel, ABC):
 
         The return value is engine-specific (e.g. sqlite3.Connection, pymysql.Connection).
         """
-        ...
+        ...  # pylint: disable=unnecessary-ellipsis

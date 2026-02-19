@@ -50,7 +50,7 @@ class Column(BaseModel):
     is_reference: bool
 
     @property
-    @cache
+    @cache  # pylint: disable=method-cache-max-size-none
     def sql_is_json(self) -> bool:
         """True if this column is stored as JSON in the database."""
         if self._is_polymorphic_ref:
@@ -64,7 +64,7 @@ class Column(BaseModel):
         return False
 
     @property
-    @cache
+    @cache  # pylint: disable=method-cache-max-size-none
     def reference_type(self) -> type | None:
         """The referenced Table type for reference columns; None otherwise."""
         if not self.is_reference:
@@ -74,13 +74,13 @@ class Column(BaseModel):
         return self.secondary_type
 
     @property
-    @cache
+    @cache  # pylint: disable=method-cache-max-size-none
     def is_collection(self) -> bool:
         """True if this is a collection reference (list/tuple/set of Table)."""
         return self.secondary_type is not None and self.base_type in (list, tuple, set)
 
     @property
-    @cache
+    @cache  # pylint: disable=method-cache-max-size-none
     def _is_polymorphic_ref(self) -> bool:
         """True if this is a polymorphic ref (Table or list[Table]) stored as JSON."""
         return is_polymorphic_table(self.base_type) or (
@@ -88,7 +88,7 @@ class Column(BaseModel):
         )
 
     @property
-    @cache
+    @cache  # pylint: disable=method-cache-max-size-none
     def column_base_type(self) -> type:
         """Python type used for the stored column (e.g. int for scalar ref, JSON for list ref)."""
         if self._is_polymorphic_ref:

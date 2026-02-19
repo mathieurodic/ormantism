@@ -8,10 +8,7 @@ into Table instances with lazy-loaded references where not preloaded.
 
 from __future__ import annotations
 
-import inspect
-import json
 import logging
-import sqlite3
 from typing import Any, Optional, Iterable
 
 from pydantic import BaseModel, Field
@@ -22,13 +19,9 @@ from .expressions import (
     ArgumentedExpression,
     Expression,
     FunctionExpression,
-    LikeExpression,
-    NaryOperatorExpression,
     OrderExpression,
-    UnaryOperatorExpression,
     TableExpression,
     ColumnExpression,
-    OrderExpression,
     collect_join_paths_from_expression,
 )
 
@@ -56,7 +49,6 @@ _WHERE_LOOKUP_MAP: dict[str, str] = {
 }
 from .table import (
     _WithSoftDelete,
-    _WithCreatedAtTimestamp,
     _WithTimestamps,
     _WithVersion,
     _WithUpdatedAtTimestamp,
@@ -67,7 +59,7 @@ logger = logging.getLogger("ormantism")
 
 
 def _select_paths_from_expressions(
-    table: type[Table], exprs: list[ColumnExpression | TableExpression]
+    exprs: list[ColumnExpression | TableExpression]
 ) -> set[str]:
     """Collect path strings from select expressions."""
     return {e.path_str for e in exprs if e is not None}
@@ -428,7 +420,7 @@ class Query(BaseModel):
 
     def sql_select_and_join(self, extra_paths: Optional[Iterable[str]] = None) -> tuple[str, str]:
         """Build full SELECT clause and FROM/JOIN clause. Column names come from cursor.description at execution."""
-        all_paths = _select_paths_from_expressions(self.table, self.select_expressions)
+        all_paths = _select_paths_from_expressions(self.select_expressions)
         if extra_paths:
             all_paths = set(all_paths) | set(extra_paths)
         table_expressions = _collect_table_expressions(self, all_paths)

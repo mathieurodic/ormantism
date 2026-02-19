@@ -152,6 +152,10 @@ Tests for Table schema and delete: `create_table`, `add_columns`, `process_data`
 
 Tests for created_at, updated_at, and deleted_at timestamps on Table instances: set on insert, update on save, and soft-delete behaviour.
 
+### table/test_validation.py
+
+Tests for Pydantic validation on Table construction: `@field_validator` execution (transform + error cases).
+
 ---
 
 ## transaction

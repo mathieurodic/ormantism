@@ -134,6 +134,10 @@ class Hydratable:
         def __init__(self, *_args, **kwargs):
             self.__dict__.update(**kwargs)
             self.__pydantic_fields_set__ = set(cls.model_fields)
+            # Pydantic internals used by utilities like `model_copy()`.
+            # When we bypass BaseModel.__init__, we must still create these.
+            self.__pydantic_extra__ = None
+            self.__pydantic_private__ = None
         def __setattr__(self, name, value):
             self.__dict__[name] = value
             return value

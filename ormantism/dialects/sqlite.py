@@ -23,7 +23,7 @@ class SqliteDialect(Dialect):
     }
 
     def connect(self, url: str):
-        import sqlite3
+        import sqlite3  # pylint: disable=import-outside-toplevel
         parsed = urllib.parse.urlparse(url)
         path = (parsed.path or "")[1:] or parsed.hostname
         logger.critical("Connecting to SQLite database %s", path)

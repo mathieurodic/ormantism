@@ -19,7 +19,7 @@ class PostgresDialect(Dialect):
     }
 
     def connect(self, url: str):
-        import psycopg2
+        import psycopg2  # pylint: disable=import-outside-toplevel,import-error
         parsed = urllib.parse.urlparse(url)
         return psycopg2.connect(
             host=parsed.hostname,

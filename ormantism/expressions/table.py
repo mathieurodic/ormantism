@@ -146,6 +146,7 @@ class TableExpression(Expression):
 
     @property
     def sql_declarations(self) -> Iterable[str]:
+        """Yield FROM/JOIN SQL clauses for this table expression and its parents."""
         if self.parent:
             assert self.path, "Path must not be empty"
             yield from self.parent.sql_declarations
